@@ -543,9 +543,7 @@ class SkillRegistry(Skill):
             return "assigned directly by the agent"
         return None
 
-    def register(
-        self, name: str, skill_or_cls: "Skill | type[Skill] | None" = None, /, **kwargs
-    ) -> None:
+    def register(self, name: str, skill_or_cls: object = None, /, **kwargs) -> None:
         """Register a skill by name, assigning it as self.<leaf_name>.
 
         Three modes:
@@ -554,6 +552,7 @@ class SkillRegistry(Skill):
           register('nemo.shell', existing_instance)    — pre-constructed instance
 
         The leaf of `name` (after last '.') becomes the attr on the agent.
+        Pre-constructed instances need not inherit from Skill (for example, MCP tools).
         """
         if skill_or_cls is None:
             entry = self._discovered.get(name)

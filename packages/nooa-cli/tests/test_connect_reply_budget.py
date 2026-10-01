@@ -47,7 +47,7 @@ def test_wizard_reply_budget_is_a_runtime_cap(tmp_path, monkeypatch, choice, exp
         input=choice + "\ny\n",
     )
     assert result.exit_code == 0, result.output
-    entry = yaml.safe_load(path.read_text())["models"]["local"]
+    entry = yaml.safe_load(path.read_text(encoding="utf-8"))["models"]["local"]
     assert entry["max_tokens"] == expected
     assert entry["include"] == ["reasoning.encrypted_content"]
     assert entry["store"] is False
@@ -195,14 +195,15 @@ def test_stage_save_fills_defaults_and_reports_shadow(tmp_path, monkeypatch):
     from nooa import llm_config
 
     source = tmp_path / "override.yaml"
-    source.write_text("models: {local: {model_name: openai/old}}\n")
+    source.write_text("models: {local: {model_name: openai/old}}\n", encoding="utf-8")
     monkeypatch.setenv("NEMO_OO_LLM_CONFIG", str(source))
     monkeypatch.setattr(llm_config, "llm_config_chain", lambda: [source])
     document = tmp_path / "entry.json"
     document.write_text(
         json.dumps(
             {"alias": "local", "entry": {"model_name": "openai/model", "client_type": "responses"}}
-        )
+        ),
+        encoding="utf-8",
     )
     destination = tmp_path / "models.yaml"
     result = CliRunner().invoke(
@@ -215,7 +216,7 @@ def test_stage_save_fills_defaults_and_reports_shadow(tmp_path, monkeypatch):
     assert entry["max_tokens"] == 32768
     assert entry["include"] == ["reasoning.encrypted_content"]
     persisted = {k: v for k, v in entry.items() if k != "provenance"}
-    assert yaml.safe_load(destination.read_text())["models"]["local"] == persisted
+    assert yaml.safe_load(destination.read_text(encoding="utf-8"))["models"]["local"] == persisted
 
 
 def test_scripted_plan_honours_explicit_reply_cap():
@@ -255,7 +256,7 @@ def test_stage_reasoning_budget_override_reaches_wire(monkeypatch, tmp_path):
     mock_http(monkeypatch, handle)
     monkeypatch.setenv("TEST_REASONING_KEY", "test-key")
     levels = tmp_path / "levels.yaml"
-    levels.write_text("high: {reasoning: {effort: high}}\n")
+    levels.write_text("high: {reasoning: {effort: high}}\n", encoding="utf-8")
     result = CliRunner().invoke(
         command,
         [
@@ -296,7 +297,7 @@ def test_shadowing_source_extra_priority_treats_the_save_target_as_highest(tmp_p
     from nooa import llm_config
 
     elsewhere = tmp_path / "elsewhere.yaml"
-    elsewhere.write_text("models: {local: {model_name: openai/old}}\n")
+    elsewhere.write_text("models: {local: {model_name: openai/old}}\n", encoding="utf-8")
     monkeypatch.setattr(llm_config, "llm_config_chain", lambda: [elsewhere])
     # shadowing_source's own priority list is built from conventional
     # locations (bundled/user/project/NEMO_OO_LLM_CONFIG), independent of

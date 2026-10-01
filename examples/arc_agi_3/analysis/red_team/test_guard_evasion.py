@@ -52,7 +52,7 @@ def main() -> int:
     #    the shell were reached (simulate: read as an unprivileged uid).
     d = Path(tempfile.mkdtemp())
     src = d / "game.py"
-    src.write_text("class Secret: pass")
+    src.write_text("class Secret: pass", encoding="utf-8")
     os.chown(src, 0, 0)
     os.chmod(src, 0o700)
     r, w = os.pipe()
@@ -63,7 +63,7 @@ def main() -> int:
         os.setgid(65534)
         os.setuid(65534)
         try:
-            src.read_text()
+            src.read_text(encoding="utf-8")
             msg = b"READ"
         except OSError:
             msg = b"EACCES"

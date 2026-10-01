@@ -12,16 +12,26 @@ import pytest
 from nooa.runtime.producers import monitor
 
 
+def _py(code: str) -> str:
+    """Shell command running *code* with this interpreter; portable across sh and cmd.exe.
+
+    *code* must not contain double quotes.
+    """
+    return f'"{sys.executable}" -c "{code}"'
+
+
 class TestMonitorProcessIsolation:
     """Verify monitor() uses pipes with proper process-group isolation."""
 
     async def test_monitor_streams_stdout(self):
-        """Basic: monitor yields stdout lines."""
+        """Basic: monitor yields stdout lines, without line terminators."""
         lines = []
-        async for line in monitor("echo hello && echo world"):
+        # print() writes "\r\n" on Windows, so this also covers CRLF output.
+        async for line in monitor(_py("print('hello'); print('world')")):
             lines.append(line)
         assert lines == ["hello", "world"]
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="process groups are POSIX-only")
     async def test_monitor_own_process_group(self):
         """Spawned process must be in its own process group (start_new_session)."""
         agent_pgid = os.getpgid(os.getpid())
@@ -68,8 +78,14 @@ class TestMonitorProcessIsolation:
                 dest.append(line)
 
         await asyncio.gather(
-            collect(monitor("echo A1 && sleep 0.1 && echo A2"), lines_a),
-            collect(monitor("echo B1 && sleep 0.1 && echo B2"), lines_b),
+            collect(
+                monitor(_py("import time; print('A1', flush=True); time.sleep(0.1); print('A2')")),
+                lines_a,
+            ),
+            collect(
+                monitor(_py("import time; print('B1', flush=True); time.sleep(0.1); print('B2')")),
+                lines_b,
+            ),
         )
 
         assert lines_a == ["A1", "A2"]
@@ -105,18 +121,57 @@ class TestMonitorProcessIsolation:
         except ProcessLookupError:
             pass  # expected: process is dead
 
+    async def test_monitor_cancel_kills_grandchildren(self, tmp_path):
+        """Cancelling monitor must stop processes the command started, on every platform."""
+        beat = tmp_path / "beat"
+        worker = tmp_path / "worker.py"
+        worker.write_text(
+            "import sys, time\n"
+            "while True:\n"
+            "    with open(sys.argv[1], 'a', encoding='utf-8') as f:\n"
+            "        f.write('.')\n"
+            "    time.sleep(0.05)\n",
+            encoding="utf-8",
+        )
+        launcher = tmp_path / "launcher.py"
+        launcher.write_text(
+            "import subprocess, sys, time\n"
+            "subprocess.Popen([sys.executable, sys.argv[1], sys.argv[2]])\n"
+            "print('ready', flush=True)\n"
+            "time.sleep(999)\n",
+            encoding="utf-8",
+        )
+
+        gen = monitor(f'"{sys.executable}" "{launcher}" "{worker}" "{beat}"')
+        async for line in gen:
+            if line == "ready":
+                break
+        for _ in range(100):
+            if beat.exists() and beat.stat().st_size:
+                break
+            await asyncio.sleep(0.05)
+        assert beat.exists(), "grandchild never started"
+
+        await gen.aclose()
+        await asyncio.sleep(0.3)
+        size = beat.stat().st_size
+        await asyncio.sleep(0.5)
+        assert beat.stat().st_size == size, "grandchild still running after cancel"
+
     async def test_cancel_one_doesnt_affect_other(self):
         """Cancel one monitor, the other keeps running."""
         survivor_lines: list[str] = []
         victim_started = asyncio.Event()
 
         async def victim():
-            async for line in monitor("echo started; sleep 999"):
+            async for line in monitor(
+                _py("import time; print('started', flush=True); time.sleep(999)")
+            ):
                 if "started" in line:
                     victim_started.set()
 
         async def survivor():
-            async for line in monitor("sleep 0.3 && echo survived"):
+            async for line in monitor(_py("import time; time.sleep(0.3); print('survived')")):
                 survivor_lines.append(line)
 
         victim_task = asyncio.create_task(victim())

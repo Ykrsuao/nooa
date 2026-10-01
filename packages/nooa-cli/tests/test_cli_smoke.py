@@ -21,6 +21,7 @@ def test_commands_discoverable():
     assert "start-dev" in names
     assert "eval" in names
     assert "config" in names
+    assert "doctor" in names
 
 
 def test_cli_discovery_does_not_import_tracing_runtime():
@@ -33,6 +34,27 @@ def test_cli_discovery_does_not_import_tracing_runtime():
         check=False,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
 
+    assert result.returncode == 0, result.stderr
+
+
+def test_doctor_help_does_not_import_core_runtime():
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys\n"
+            "from click.testing import CliRunner\n"
+            "from nooa_cli import oo\n"
+            "result = CliRunner().invoke(oo, ['doctor', '--help'])\n"
+            "assert result.exit_code == 0, result.output\n"
+            "assert 'nooa' not in sys.modules\n",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=20,
+    )
     assert result.returncode == 0, result.stderr

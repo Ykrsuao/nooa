@@ -30,7 +30,7 @@ def test_opaque_reasoning_state_is_redacted_from_http_debug_payloads(
         httpx.post(f"http://127.0.0.1:{secret_header_server.server_port}/llm", json=payload)
     finally:
         disable()
-    redacted = json.loads(next(tmp_path.glob("request_*.json")).read_text())
+    redacted = json.loads(next(tmp_path.glob("request_*.json")).read_text(encoding="utf-8"))
 
     assert redacted["input"] == [
         {"encrypted_content": "[REDACTED]"},
@@ -103,7 +103,7 @@ def test_save_responses_redacts_sensitive_response_headers_and_bodies(
 
     assert response.headers["x-session-token"] == "response-session-secret"
 
-    response_log = json.loads(next(tmp_path.glob("response_*.json")).read_text())
+    response_log = json.loads(next(tmp_path.glob("response_*.json")).read_text(encoding="utf-8"))
     assert response_log["headers"]["set-cookie"] == "***REDACTED***"
     assert response_log["headers"]["x-api-key"] == "***REDACTED***"
     assert response_log["headers"]["x-session-token"] == "***REDACTED***"
@@ -133,7 +133,7 @@ def test_errors_only_jsonl_redacts_sensitive_headers_and_bodies(
 
     assert response.status_code == 500
 
-    entry = json.loads((tmp_path / "llm_errors.jsonl").read_text())
+    entry = json.loads((tmp_path / "llm_errors.jsonl").read_text(encoding="utf-8"))
     assert entry["request"]["headers"]["authorization"] == "***REDACTED***"
     assert entry["request"]["body"]["api_key"] == "[REDACTED]"
     assert entry["response"]["headers"]["set-cookie"] == "***REDACTED***"

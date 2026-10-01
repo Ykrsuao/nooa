@@ -166,7 +166,7 @@ async def test_atif_scope_still_cascades_standalone_into_subagent(tmp_path: Path
     ):
         assert await agent.run("classify") == "pos"
 
-    loaded = Trajectory.model_validate_json(out.read_text())
+    loaded = Trajectory.model_validate_json(out.read_text(encoding="utf-8"))
     assert_atif_normative(loaded)
     # Standalone classify_iso lives under subagent_trajectories[].
     assert loaded.subagent_trajectories is not None
@@ -288,7 +288,7 @@ async def test_enable_atif_two_agents_one_combined_file_per_run(
     assert a_dir.exists()
     a_files = list(a_dir.glob("*.json"))
     assert len(a_files) == 1, f"expected exactly one AgentA trajectory, got {a_files}"
-    a_traj = Trajectory.model_validate_json(a_files[0].read_text())
+    a_traj = Trajectory.model_validate_json(a_files[0].read_text(encoding="utf-8"))
     assert_atif_normative(a_traj)
     assert a_traj.agent.name == "_AgentA"
 
@@ -310,7 +310,7 @@ async def test_enable_atif_two_agents_one_combined_file_per_run(
     b_dir = output_dir / "_AgentB"
     if b_dir.exists():
         for bf in b_dir.glob("*.json"):
-            b_traj = Trajectory.model_validate_json(bf.read_text())
+            b_traj = Trajectory.model_validate_json(bf.read_text(encoding="utf-8"))
             # If AgentB has a trajectory at all, it must be empty —
             # AgentB never ran.
             assert len(b_traj.steps) == 0, (

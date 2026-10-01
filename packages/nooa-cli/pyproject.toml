@@ -8,7 +8,7 @@ readme = "README.md"
 requires-python = ">=3.12,<3.14"
 dependencies = [
     # Floor reflects the actual minimum-compatible core (bump when the cli
-    # starts to require a newer core API). No auto-lockstep — published
+    # starts to require a newer core API). No auto-lockstep - published
     # wheels declare what they actually need, not what was co-released.
     "nooa",
     "click>=8.1.0",
@@ -30,7 +30,7 @@ nooa = "nooa_cli:main"
 
 [project.optional-dependencies]
 # AST-aware code analysis for RepoTools (tree-sitter grammars).
-# The CLI works without these — RepoTools falls back to regex.
+# The CLI works without these - RepoTools falls back to regex.
 ast = [
     "tree-sitter>=0.23.0",
     "tree-sitter-python>=0.23.0",

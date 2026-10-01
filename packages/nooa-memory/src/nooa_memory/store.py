@@ -514,8 +514,10 @@ class MemoryStore:
 
     def maintenance_history(self, limit: int = 20) -> list[dict]:
         with self._lock:
+            # Multiple writes can share a Windows clock tick.
             rows = self._conn.execute(
-                "SELECT ts, kind, report FROM maintenance_log ORDER BY ts DESC LIMIT ?", (limit,)
+                "SELECT ts, kind, report FROM maintenance_log ORDER BY ts DESC, rowid DESC LIMIT ?",
+                (limit,),
             ).fetchall()
             return [
                 {"ts": r["ts"], "kind": r["kind"], "report": json.loads(r["report"])} for r in rows

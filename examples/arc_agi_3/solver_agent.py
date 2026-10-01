@@ -431,7 +431,7 @@ async def _tail_from_start(path: str, poll_interval: float = 0.5):
     drop it and deadlock the turn loop. Reading from the start makes the
     attach timing irrelevant (the file is always fresh per run).
     """
-    fh = open(path)
+    fh = open(path, encoding="utf-8")
     try:
         while True:
             pos = fh.tell()
@@ -664,7 +664,7 @@ class ArcSolverBase(InteractiveAgent):
         install_summarizer(SummarizationConfig(), agent=self)
 
         if skill_path is not None:
-            self.context["arc_skill"] = Path(skill_path).read_text()
+            self.context["arc_skill"] = Path(skill_path).read_text(encoding="utf-8")
         self.context.set_dynamic("arc_game", "self.format_game_context()")
 
         # Step reasoning_effort down the ladder as a turn runs long (wraps
@@ -673,7 +673,7 @@ class ArcSolverBase(InteractiveAgent):
 
         # tail() starts at end-of-file — the harness must not write state 0
         # before the tail producer above is attached. This marker releases it.
-        (self.ipc_dir / "agent_ready").write_text(str(time.time()))
+        (self.ipc_dir / "agent_ready").write_text(str(time.time()), encoding="utf-8")
 
     @hidden
     def _install_effort_ladder(self) -> None:
@@ -723,7 +723,7 @@ class ArcSolverBase(InteractiveAgent):
 
     @hidden
     def _latest_state(self) -> dict | None:
-        lines = self._states_path.read_text().strip().splitlines()
+        lines = self._states_path.read_text(encoding="utf-8").strip().splitlines()
         for line in reversed(lines):
             line = line.strip()
             if line:
@@ -732,7 +732,7 @@ class ArcSolverBase(InteractiveAgent):
 
     @hidden
     def _last_submitted_turn(self) -> int | None:
-        lines = self._actions_path.read_text().strip().splitlines()
+        lines = self._actions_path.read_text(encoding="utf-8").strip().splitlines()
         for line in reversed(lines):
             line = line.strip()
             if line:
@@ -775,7 +775,7 @@ class ArcSolverBase(InteractiveAgent):
                 ]
 
             if events_path.exists():
-                for line in events_path.read_text().splitlines():
+                for line in events_path.read_text(encoding="utf-8").splitlines():
                     line = line.strip()
                     if not line:
                         continue
@@ -801,7 +801,7 @@ class ArcSolverBase(InteractiveAgent):
                         entries.append(entry)
         else:
             entries = []
-            for line in self._states_path.read_text().splitlines():
+            for line in self._states_path.read_text(encoding="utf-8").splitlines():
                 line = line.strip()
                 if not line:
                     continue
@@ -945,7 +945,7 @@ class ArcSolverBase(InteractiveAgent):
         entry = {"turn": turn, "actions": actions, "rationale": rationale[:2000]}
         if truncation_warning:
             entry["truncated_from"] = requested
-        with self._actions_path.open("a") as f:
+        with self._actions_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry) + "\n")
         # New turn starts now: reset the effort-ladder clock (mirrors the harness
         # resetting its silence timer when it receives this batch) and rewind to
@@ -977,7 +977,7 @@ class ArcSolverBase(InteractiveAgent):
         err = _check_helper_ast(source)
         if err is not None:
             return f"REJECTED: {err}"
-        (self.helpers_dir / filename).write_text(source)
+        (self.helpers_dir / filename).write_text(source, encoding="utf-8")
         return f"wrote helpers/{filename} ({len(source)} chars). Call load_helpers() to use it."
 
     def read_helper(self, filename: str) -> str:
@@ -985,7 +985,7 @@ class ArcSolverBase(InteractiveAgent):
         p = self.helpers_dir / filename
         if not _HELPER_NAME.match(filename) or not p.exists():
             return f"no such helper: {filename!r} (have: {[q.name for q in self.helpers_dir.glob('*.py')]})"
-        return p.read_text()
+        return p.read_text(encoding="utf-8")
 
     def load_helpers(self) -> str:
         """(Re)load every ``helpers/*.py`` module into ``self.h.<module_name>``.
@@ -995,7 +995,7 @@ class ArcSolverBase(InteractiveAgent):
         for f in sorted(self.helpers_dir.glob("*.py")):
             # Re-check before executing: a seeded/older helper could predate the
             # write-time guard, so importing it unchecked would reopen the hole.
-            err = _check_helper_ast(f.read_text())
+            err = _check_helper_ast(f.read_text(encoding="utf-8"))
             if err is not None:
                 report.append(f"{f.name}: BLOCKED — {err}")
                 continue
@@ -1155,14 +1155,18 @@ class MdArcSolverAgent(ArcSolverBase):
         if not _NOTE_NAME.match(name):
             return f"REJECTED: name {name!r} must match [a-z0-9_-]+.md"
         p = self.knowledge_dir / name
-        return p.read_text() if p.exists() else f"(no file {name} yet — have {self.list_notes()})"
+        return (
+            p.read_text(encoding="utf-8")
+            if p.exists()
+            else f"(no file {name} yet — have {self.list_notes()})"
+        )
 
     def append_notes(self, name: str, content: str) -> str:
         """Append an entry to a knowledge file (created if missing)."""
         if not _NOTE_NAME.match(name):
             return f"REJECTED: name {name!r} must match [a-z0-9_-]+.md"
         p = self.knowledge_dir / name
-        with p.open("a") as f:
+        with p.open("a", encoding="utf-8") as f:
             f.write(content.rstrip() + "\n\n")
         return f"appended {len(content)} chars to {name}"
 
@@ -1170,5 +1174,5 @@ class MdArcSolverAgent(ArcSolverBase):
         """Overwrite a knowledge file — use when curating/consolidating."""
         if not _NOTE_NAME.match(name):
             return f"REJECTED: name {name!r} must match [a-z0-9_-]+.md"
-        (self.knowledge_dir / name).write_text(content)
+        (self.knowledge_dir / name).write_text(content, encoding="utf-8")
         return f"wrote {name} ({len(content)} chars)"

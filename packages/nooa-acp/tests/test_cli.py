@@ -92,6 +92,7 @@ def test_console_script_is_installed_and_runnable():
         [_console_script(), "--help"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=60,
         env=_clean_env(),
     )
@@ -107,6 +108,7 @@ def test_console_script_requires_a_model():
         [_console_script()],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=60,
         env=_clean_env(),
     )

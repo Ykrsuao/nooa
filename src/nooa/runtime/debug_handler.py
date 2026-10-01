@@ -348,7 +348,7 @@ def _debug_signal_handler(signum: int, frame: FrameType | None) -> None:
     llm_in_stack = _detect_llm_in_stack(frame)
 
     try:
-        with open(debug_file_path, "w") as debug_file:
+        with open(debug_file_path, "w", encoding="utf-8") as debug_file:
             for file in [sys.stderr, debug_file]:
                 assert file is not None
                 file.write("\n")
@@ -424,9 +424,13 @@ def install_debug_handler(dump_dir: Path | None = None) -> None:
     except (RuntimeError, AttributeError, OSError) as exc:
         logger.debug("faulthandler.enable() skipped: %s", exc)
 
-    # Install SIGUSR2 handler (less commonly used than SIGUSR1)
+    # Install SIGUSR2 handler (less commonly used than SIGUSR1). Windows has no
+    # SIGUSR2; dump_debug_info() remains available for programmatic use there.
+    sigusr2 = getattr(signal, "SIGUSR2", None)
+    if sigusr2 is None:
+        return
     try:
-        signal.signal(signal.SIGUSR2, _debug_signal_handler)
+        signal.signal(sigusr2, _debug_signal_handler)
         _handler_installed = True
     except (ValueError, OSError):
         # Can't set signal handler (not main thread, or platform issue)

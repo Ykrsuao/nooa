@@ -58,7 +58,7 @@ def _clean_env(monkeypatch, tmp_path):
 
 def _write_yaml(path: Path, alias: str = "x") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(f"models:\n  {alias}:\n    model_name: m\n")
+    path.write_text(f"models:\n  {alias}:\n    model_name: m\n", encoding="utf-8")
 
 
 class TestEmpty:
@@ -145,7 +145,10 @@ class TestDedup:
         target = tmp_path / "target.yaml"
         _write_yaml(target)
         link = user_dir / "llm_config.yaml"
-        link.symlink_to(target)
+        try:
+            link.symlink_to(target)
+        except OSError as exc:  # Windows without admin rights or Developer Mode
+            pytest.skip(f"cannot create symlinks: {exc}")
         monkeypatch.setenv("NEMO_OO_LLM_CONFIG", str(target))
         chain = llm_config_chain()
         # Symlinked user-dir entry resolves to the same real path as

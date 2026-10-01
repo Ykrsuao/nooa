@@ -79,3 +79,14 @@ class TestLockSerialization:
             assert all(r[2] == 0 for r in results)
         finally:
             await session.close()
+
+    async def test_concurrent_starts_share_one_bash(self, tmp_path):
+        """Callers that start a fresh session together (as ShellTools.run does) share it."""
+        session = BashSession(cwd=tmp_path)
+        try:
+            await asyncio.gather(session.start(), session.start())
+            assert session._start_count == 1
+            stdout, _, code = await session.run("echo ok")
+            assert (stdout, code) == ("ok", 0)
+        finally:
+            await session.close()

@@ -101,7 +101,7 @@ def test_save_normalizes_legacy_stateless_entry_without_mutation(tmp_path, inclu
     original = deepcopy(entry)
     path = tmp_path / "models.yaml"
     connect.write(entry, path, alias="test")
-    saved = yaml.safe_load(path.read_text())["models"]["test"]
+    saved = yaml.safe_load(path.read_text(encoding="utf-8"))["models"]["test"]
     assert saved["max_tokens"] == 32768
     assert saved["include"] == ([] if include == [] else ["reasoning.encrypted_content"])
     assert entry == original

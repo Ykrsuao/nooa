@@ -56,9 +56,14 @@ class ProducerHelper:
             self._bg_ready.wait(timeout=2.0)
 
     def _run_bg(self) -> None:
+        assert self._bg_loop is not None
         asyncio.set_event_loop(self._bg_loop)
         self._bg_ready.set()
-        self._bg_loop.run_forever()
+        try:
+            self._bg_loop.run_forever()
+        finally:
+            self._bg_loop.close()
+            asyncio.set_event_loop(None)
 
     def call(self, fn: Callable[[], Any]) -> None:
         """Execute fn() — either inline (same_loop) or on the bg thread."""
@@ -83,6 +88,19 @@ async def producer(mode):
     await p.start()
     yield p
     await p.stop()
+
+
+async def test_producer_helper_closes_background_loop():
+    helper = ProducerHelper("cross_loop")
+    await helper.start()
+    loop = helper._bg_loop
+    assert loop is not None
+    try:
+        await helper.stop()
+        assert loop.is_closed()
+    finally:
+        if not loop.is_running() and not loop.is_closed():
+            loop.close()
 
 
 # ---------------------------------------------------------------------------
@@ -458,7 +476,9 @@ async def test_concurrent_puts_to_single_waiter(producer: ProducerHelper, mode: 
     assert item2 == "second"
 
 
-async def test_waiter_cancelled_after_cross_thread_put_item_not_lost(mode: str):
+async def test_waiter_cancelled_after_cross_thread_put_item_not_lost(
+    producer: ProducerHelper, mode: str
+):
     """Simulates the TOCTOU race: waiter cancelled between put and delivery.
 
     In cross_loop mode, there's a window between call_soon_threadsafe
@@ -478,12 +498,7 @@ async def test_waiter_cancelled_after_cross_thread_put_item_not_lost(mode: str):
     await asyncio.sleep(0.01)  # register waiter
 
     # Simulate: background thread puts, then we immediately cancel
-    bg_loop = asyncio.new_event_loop()
-    bg_thread = threading.Thread(target=bg_loop.run_forever, daemon=True)
-    bg_thread.start()
-    await asyncio.sleep(0.01)
-
-    bg_loop.call_soon_threadsafe(lambda: ch.put("contested"))
+    producer.call(lambda: ch.put("contested"))
 
     # Tiny sleep to let the put schedule _safe_deliver, then cancel waiter
     await asyncio.sleep(0.001)
@@ -510,9 +525,6 @@ async def test_waiter_cancelled_after_cross_thread_put_item_not_lost(mode: str):
     if rebuffered:
         item = await asyncio.wait_for(ch.get(), timeout=1.0)
         assert item == "contested"
-
-    bg_loop.call_soon_threadsafe(bg_loop.stop)
-    bg_thread.join(timeout=1.0)
 
 
 async def test_status_reflects_pending_items(producer: ProducerHelper, mode: str):

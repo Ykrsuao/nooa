@@ -14,7 +14,7 @@ import yaml
 from nooa.unifiedllm import RetryConfig, get_llm_client
 
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "examples/reasoning_levels/llm_config.yaml"
-MODELS = yaml.safe_load(CONFIG_PATH.read_text())["models"]
+MODELS = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))["models"]
 
 
 @pytest.mark.parametrize("style", ["chat", "responses", "anthropic"])

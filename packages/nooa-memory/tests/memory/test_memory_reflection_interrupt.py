@@ -10,6 +10,8 @@ from nooa_memory import (
     MemoryManager,
     MemoryToolsMixin,
     MemoryType,
+    ReflectionCompleted,
+    ReflectionStarted,
 )
 from nooa_memory.config import ForgetPolicy, ReflectionPolicy
 from nooa_memory.embeddings import HashingEmbedder
@@ -181,10 +183,17 @@ def test_manager_reflect_interruptible_events_and_maintenance():
     agent.remember("another fact entirely", type="info")
 
     seen = []
-    agent.event_manager.on("ReflectionStarted", lambda e: seen.append(("started", e.trigger)))
-    agent.event_manager.on(
-        "ReflectionCompleted", lambda e: seen.append(("done", e.trigger, e.interrupted))
-    )
+
+    def on_started(event):
+        assert isinstance(event, ReflectionStarted)
+        seen.append(("started", event.trigger))
+
+    def on_completed(event):
+        assert isinstance(event, ReflectionCompleted)
+        seen.append(("done", event.trigger, event.interrupted))
+
+    agent.event_manager.on("ReflectionStarted", on_started)
+    agent.event_manager.on("ReflectionCompleted", on_completed)
 
     report = mgr.reflect_interruptible(lambda: False, trigger="idle")
     assert report.interrupted is False
@@ -213,7 +222,12 @@ def test_plain_reflect_emits_started_with_manual_trigger():
     agent = MemAgent()
     mgr = MemoryManager.install(agent, config=MemoryConfig(enabled=True, path=":memory:"))
     seen = []
-    agent.event_manager.on("ReflectionStarted", lambda e: seen.append(e.trigger))
+
+    def on_started(event):
+        assert isinstance(event, ReflectionStarted)
+        seen.append(event.trigger)
+
+    agent.event_manager.on("ReflectionStarted", on_started)
     mgr.reflect()
     assert seen == ["manual"]
     assert mgr.store.maintenance_history(1)[0]["report"]["trigger"] == "manual"

@@ -23,18 +23,22 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ._utils import classify_error_type, merge_eval_metadata, sanitize_for_json
 from .agents import agent_from_spec
 from .eval_types import EvalTestResult, ScoreDetail, SubprocessTaskInput, Tier
 from .execute import execute_task
-from .models import Task
+from .models import ExecutionResult, Task
 from .scoring import (
     build_scoring_context,
     compute_weighted_score,
     score_task,
     scorer_from_spec,
 )
+
+if TYPE_CHECKING:
+    from ._memory_monitor import MemoryMonitor
 
 log = logging.getLogger(__name__)
 
@@ -151,7 +155,9 @@ async def run_task(task_input: SubprocessTaskInput) -> EvalTestResult:
         )
 
     # Stage 1: Execute
+    result: ExecutionResult | None = None
     _execute_error: Exception | None = None
+    _reason: str | None = None
     try:
         result = await execute_task(
             agent=agent,
@@ -159,17 +165,18 @@ async def run_task(task_input: SubprocessTaskInput) -> EvalTestResult:
             trace_file=None if task_input.use_otlp else trace_file,
             timeout_seconds=task_input.timeout_seconds,
         )
+        _reason = result.error
     except Exception as e:
         _execute_error = e
+        _reason = str(e)
 
     # End any active spans that were never closed (e.g. due to timeout cancellation).
     # OTel SDK only exports ended spans; without this, timed-out executions lose
     # all tracing data because shutdown_traces() silently drops un-ended spans.
-    if _execute_error is not None or (result and result.error):
+    if _reason is not None:
         try:
             from nooa.tracing import end_active_spans
 
-            _reason = str(_execute_error) if _execute_error else result.error
             end_active_spans(_reason)
         except Exception as e:
             log.debug(f"end_active_spans() failed (non-fatal): {e}")
@@ -205,6 +212,8 @@ async def run_task(task_input: SubprocessTaskInput) -> EvalTestResult:
             session_id,
             eval_metadata=merged_eval_meta,
         )
+
+    assert result is not None
 
     # Fetch trace from headless backend for scoring
     _viewer_base = task_input.otlp_endpoint.rstrip("/").removesuffix("/v1/traces")
@@ -352,14 +361,13 @@ async def run_task(task_input: SubprocessTaskInput) -> EvalTestResult:
     return eval_result
 
 
-def _annotate_memory(result: EvalTestResult, monitor: object | None) -> EvalTestResult:
+def _annotate_memory(result: EvalTestResult, monitor: MemoryMonitor | None) -> EvalTestResult:
     """Stamp memory monitoring info onto an eval result.
 
     Args:
         result: The eval result to annotate.
         monitor: A ``MemoryMonitor`` instance (or None if memory limiting is off).
-                 Typed as ``object`` to avoid importing ``_memory_monitor`` at
-                 module level.
+                 Its type-only import preserves lazy loading at runtime.
     """
     if monitor is None:
         return result
@@ -522,7 +530,7 @@ def main() -> None:
             if not line:
                 continue
 
-            monitor = None  # _memory_monitor.MemoryMonitor | None
+            monitor: MemoryMonitor | None = None
             task_input: SubprocessTaskInput | None = None
             _eval_meta: dict = {}
             try:
@@ -624,12 +632,8 @@ def main() -> None:
                     monitor.stop()
                 if task_input and task_input.memory_limit_mb and _memory_mod:
                     _memory_mod.clear_hard_limit()
-                    try:
-                        import tracemalloc
-
-                        tracemalloc.clear_traces()
-                    except Exception:
-                        pass
+                    # This one-shot worker exits below. Clearing tracemalloc here
+                    # can stall Windows workers before their result is delivered.
 
             # When memory limiting is active, write result atomically via
             # os.write() (single syscall, no Python buffering) then exit

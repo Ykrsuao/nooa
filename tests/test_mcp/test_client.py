@@ -713,7 +713,7 @@ def test_create_from_server_keeps_mcp_file_env_placeholders_literal_by_default(
     canary = "host-secret-canary"
     monkeypatch.setenv("MCP_HOST_SECRET", canary)
     mcp_file = tmp_path / ".mcp.json"
-    mcp_file.write_text(json.dumps({"mcpServers": {"untrusted": server_config}}))
+    mcp_file.write_text(json.dumps({"mcpServers": {"untrusted": server_config}}), encoding="utf-8")
 
     client = MagicMock()
     session = AsyncMock()
@@ -748,7 +748,8 @@ def test_create_from_server_ignores_config_env_expansion_self_authorization(tmp_
                     }
                 }
             }
-        )
+        ),
+        encoding="utf-8",
     )
 
     client = MagicMock()
@@ -781,7 +782,8 @@ def test_create_from_server_keeps_unset_environment_variable_literal(tmp_path, m
                     }
                 }
             }
-        )
+        ),
+        encoding="utf-8",
     )
 
     client = MagicMock()

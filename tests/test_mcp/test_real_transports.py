@@ -80,6 +80,7 @@ def wiki_http_url(unused_tcp_port: int) -> Iterator[str]:
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        encoding="utf-8",
     )
     try:
         _wait_for_server(process, unused_tcp_port)

@@ -16,7 +16,8 @@ def skill_dir(tmp_path):
     d.mkdir()
     (d / "SKILL.md").write_text(
         "---\nname: git-workflow\ndescription: Best practices for Git\n---\n"
-        "# Git Workflow Guide\n\n1. Always create feature branches\n"
+        "# Git Workflow Guide\n\n1. Always create feature branches\n",
+        encoding="utf-8",
     )
     return d
 
@@ -101,11 +102,15 @@ def test_skill_dir_on_path_skill(skill_dir):
 def skill_with_scripts(skill_dir):
     scripts_dir = skill_dir / "scripts"
     scripts_dir.mkdir()
-    (scripts_dir / "greet.py").write_text("print('hello from script')")
-    (scripts_dir / "echo_args.py").write_text("import sys\nprint(' '.join(sys.argv[1:]))")
-    (scripts_dir / "fail.py").write_text("import sys\nprint('oops')\nsys.exit(1)")
+    (scripts_dir / "greet.py").write_text("print('hello from script')", encoding="utf-8")
+    (scripts_dir / "echo_args.py").write_text(
+        "import sys\nprint(' '.join(sys.argv[1:]))", encoding="utf-8"
+    )
+    (scripts_dir / "fail.py").write_text("import sys\nprint('oops')\nsys.exit(1)", encoding="utf-8")
     shebang = scripts_dir / "shebang_echo.py"
-    shebang.write_text("#!/usr/bin/env python3\nimport sys\nprint(' '.join(sys.argv[1:]))")
+    shebang.write_text(
+        "#!/usr/bin/env python3\nimport sys\nprint(' '.join(sys.argv[1:]))", encoding="utf-8"
+    )
     shebang.chmod(0o755)
     return skill_dir
 

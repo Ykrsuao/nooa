@@ -24,6 +24,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+requires_sigusr2 = pytest.mark.skipif(
+    not hasattr(signal, "SIGUSR2"), reason="SIGUSR2 is not available on this platform"
+)
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -420,6 +424,7 @@ class TestDumpCellCode:
 # ---------------------------------------------------------------------------
 
 
+@requires_sigusr2
 class TestDebugSignalHandler:
     def setup_method(self):
         _reset_module_state()
@@ -440,7 +445,7 @@ class TestDebugSignalHandler:
             _debug_signal_handler(signal.SIGUSR2, frame)
 
         assert dump_path.exists()
-        content = dump_path.read_text()
+        content = dump_path.read_text(encoding="utf-8")
         assert "DEBUG DUMP" in content
 
     def test_writes_signal_number(self, tmp_path):
@@ -455,7 +460,7 @@ class TestDebugSignalHandler:
         ):
             _debug_signal_handler(12, frame)
 
-        content = dump_path.read_text()
+        content = dump_path.read_text(encoding="utf-8")
         assert "12" in content
 
     def test_writes_to_stderr(self, tmp_path, capsys):
@@ -489,7 +494,7 @@ class TestDebugSignalHandler:
         ):
             _debug_signal_handler(signal.SIGUSR2, frame)
 
-        content = dump_path.read_text()
+        content = dump_path.read_text(encoding="utf-8")
         assert "PENDING LLM CALLS" in content
         assert "gpt-4" in content
 
@@ -529,7 +534,7 @@ class TestDebugSignalHandler:
         ):
             _debug_signal_handler(signal.SIGUSR2, frame)
 
-        content = dump_path.read_text()
+        content = dump_path.read_text(encoding="utf-8")
         assert "STUCK IN LLM CALL" in content
 
     def test_shows_llm_stuck_when_detected_in_stack(self, tmp_path):
@@ -552,7 +557,7 @@ class TestDebugSignalHandler:
         ):
             _debug_signal_handler(signal.SIGUSR2, frame)
 
-        content = dump_path.read_text()
+        content = dump_path.read_text(encoding="utf-8")
         assert "STUCK IN LLM CALL" in content
         assert "httpx" in content
 
@@ -562,6 +567,7 @@ class TestDebugSignalHandler:
 # ---------------------------------------------------------------------------
 
 
+@requires_sigusr2
 class TestInstallDebugHandler:
     def setup_method(self):
         _reset_module_state()
@@ -624,6 +630,19 @@ class TestInstallDebugHandler:
 
         dh.install_debug_handler(dump_dir=tmp_path)
         assert dh._dump_dir == tmp_path
+
+
+def test_install_without_sigusr2_skips_signal_handler(monkeypatch):
+    """Platforms without SIGUSR2 (Windows) import nooa without error."""
+    import nooa.runtime.debug_handler as dh
+
+    _reset_module_state()
+    monkeypatch.delattr(signal, "SIGUSR2", raising=False)
+    try:
+        dh.install_debug_handler()
+        assert dh._handler_installed is False
+    finally:
+        _reset_module_state()
 
 
 # ---------------------------------------------------------------------------

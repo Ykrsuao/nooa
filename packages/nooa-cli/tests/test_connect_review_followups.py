@@ -58,7 +58,7 @@ def test_wizard_saves_endpoint_limits_not_catalogue(tmp_path, monkeypatch):
         ],
     )
     assert result.exit_code == 0, result.output
-    entry = yaml.safe_load(target.read_text())["models"]["local"]
+    entry = yaml.safe_load(target.read_text(encoding="utf-8"))["models"]["local"]
     assert entry["context_window"] == 100000
     assert entry["max_tokens"] == 16000
     assert "endpoint input limit" in result.output
@@ -114,7 +114,8 @@ def test_stage_plan_reuses_discovery_without_http(tmp_path, monkeypatch):
                     ],
                 }
             }
-        )
+        ),
+        encoding="utf-8",
     )
     mock_http(monkeypatch, lambda request: pytest.fail("plan must stay offline"))
     result = CliRunner().invoke(
@@ -197,7 +198,7 @@ def test_wizard_retries_only_selected_interface_at_120_seconds(tmp_path, monkeyp
     assert result.output.count("Results ·") == 1
     assert "route may be slow" in result.output
     assert "private server detail" not in result.output
-    entry = yaml.safe_load(target.read_text())["models"]["local"]
+    entry = yaml.safe_load(target.read_text(encoding="utf-8"))["models"]["local"]
     assert "provenance" not in entry
 
 

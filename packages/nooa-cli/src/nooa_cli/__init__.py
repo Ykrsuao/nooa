@@ -27,9 +27,9 @@ from .completion import completion
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
 
 
-# `completion` just emits a shell script and doesn't need the ~1.5s core
-# import cost or secrets preload.
-_SKIP_SECRETS_PRELOAD = {"completion"}
+# Infrastructure commands do not need credentials. In particular, doctor must
+# work without reading (or attempting to repair) a user's secrets file.
+_SKIP_SECRETS_PRELOAD = {"completion", "doctor"}
 
 
 @click.group(context_settings=CONTEXT_SETTINGS)

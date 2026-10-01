@@ -92,7 +92,7 @@ def _only_trajectory(output_dir: Path, agent_cls_name: str) -> Trajectory:
     assert agent_dir.exists(), f"no trajectory dir for {agent_cls_name} under {output_dir}"
     files = list(agent_dir.glob("*.json"))
     assert len(files) == 1, f"expected exactly one {agent_cls_name} trajectory, got {files}"
-    return Trajectory.model_validate_json(files[0].read_text())
+    return Trajectory.model_validate_json(files[0].read_text(encoding="utf-8"))
 
 
 # ---------------------------------------------------------------------------
@@ -330,7 +330,7 @@ async def test_concurrent_top_level_runs_do_not_cross_contaminate(
     # Each run's trajectory must embed EXACTLY its own one standalone — not
     # zero (dropped) and not two (another run's standalone leaked in).
     for f in files:
-        traj = Trajectory.model_validate_json(f.read_text())
+        traj = Trajectory.model_validate_json(f.read_text(encoding="utf-8"))
         assert_atif_normative(traj)
         subs = [c.agent.name for c in (traj.subagent_trajectories or [])]
         assert subs == ["categorize_ticket"], (

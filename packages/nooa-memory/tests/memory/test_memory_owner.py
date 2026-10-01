@@ -44,7 +44,9 @@ def test_default_owner_is_class_name():
     mgr = MemoryManager.install(agent, config=MemoryConfig(enabled=True, path=":memory:"))
     assert mgr.owner == "MemAgent"
     mid = agent.remember("a fact", type="info")
-    assert mgr.store.get(mid).owner == "MemAgent"
+    got = mgr.store.get(mid)
+    assert got is not None
+    assert got.owner == "MemAgent"
 
 
 def test_explicit_empty_owner_writes_unowned():
@@ -52,7 +54,9 @@ def test_explicit_empty_owner_writes_unowned():
     mgr = MemoryManager.install(agent, config=MemoryConfig(enabled=True, path=":memory:", owner=""))
     assert mgr.owner == ""
     mid = agent.remember("a shared convention", type="info")
-    assert mgr.store.get(mid).owner == ""
+    got = mgr.store.get(mid)
+    assert got is not None
+    assert got.owner == ""
 
 
 # --------------------------------------------------------------------------
@@ -83,8 +87,11 @@ def test_dedup_never_reinforces_foreign_memory(shared_path):
     aid = alice.remember("identical fact about shipping releases", type="info")
     bid = bob.remember("identical fact about shipping releases", type="info")
     assert aid != bid  # bob got his own copy, alice's was not touched
-    assert mgr_b.store.get(bid).owner == "bob"
-    assert mgr_a.store.get(aid).reinforcement_count == 0
+    b_memory = mgr_b.store.get(bid)
+    a_memory = mgr_a.store.get(aid)
+    assert b_memory is not None and a_memory is not None
+    assert b_memory.owner == "bob"
+    assert a_memory.reinforcement_count == 0
 
 
 # --------------------------------------------------------------------------

@@ -35,9 +35,10 @@ def _make_library(libs_root: Path, lib_name: str, init_body: str) -> Path:
     lib_dir = libs_root / lib_name
     lib_dir.mkdir(parents=True, exist_ok=True)
     (lib_dir / "pyproject.toml").write_text(
-        f'[project]\nname = "{lib_name}"\nversion = "0.1.0"\ndescription = "tmp"\ndependencies = []\n'
+        f'[project]\nname = "{lib_name}"\nversion = "0.1.0"\ndescription = "tmp"\ndependencies = []\n',
+        encoding="utf-8",
     )
-    (lib_dir / "__init__.py").write_text(init_body)
+    (lib_dir / "__init__.py").write_text(init_body, encoding="utf-8")
     return lib_dir
 
 

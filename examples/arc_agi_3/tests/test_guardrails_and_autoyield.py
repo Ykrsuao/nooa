@@ -100,7 +100,7 @@ def test_submit_actions_autoyields_on_success(tmp_path):
     with pytest.raises(_ReturnResultSignal):
         sa.ArcSolverBase.submit_actions(fake, ["UP"], "predict: move up")
     # the action was written before the yield
-    assert '"actions": ["UP"]' in (tmp_path / "actions.jsonl").read_text()
+    assert '"actions": ["UP"]' in (tmp_path / "actions.jsonl").read_text(encoding="utf-8")
 
 
 def test_submit_actions_rejects_invalid_without_yielding(tmp_path):

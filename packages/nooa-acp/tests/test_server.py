@@ -21,6 +21,7 @@ from acp.schema import (
     HttpMcpServer,
     McpServerStdio,
     SseMcpServer,
+    TextContentBlock,
     UserMessageChunk,
 )
 from click.testing import CliRunner
@@ -194,7 +195,8 @@ def _write_external_workflow_skill(workspace, skills_root) -> None:
     (package / "pyproject.toml").write_text(
         '[project]\nname = "workflow-skill"\n\n'
         '[project.entry-points."nooa.skills"]\n'
-        '"nvzurich.workflow" = "workflow_skill:WorkflowSkill"\n'
+        '"nvzurich.workflow" = "workflow_skill:WorkflowSkill"\n',
+        encoding="utf-8",
     )
     (package / "__init__.py").write_text(
         "from nooa.skill import Skill, slash_command\n\n"
@@ -206,12 +208,13 @@ def _write_external_workflow_skill(workspace, skills_root) -> None:
         "    @slash_command('skill-status', output_to_agent=False)\n"
         "    def status(self, args: str) -> str:\n"
         '        """Show workflow status."""\n'
-        "        return f'status:{args}'\n"
+        "        return f'status:{args}'\n",
+        encoding="utf-8",
     )
     config_dir = workspace / ".nooa"
     config_dir.mkdir()
     (config_dir / "settings.yaml").write_text(
-        f"tui:\n  additional_skills_dirs:\n    - {skills_root}\n"
+        f"tui:\n  additional_skills_dirs:\n    - {skills_root}\n", encoding="utf-8"
     )
 
 
@@ -223,12 +226,13 @@ def _write_standalone_command_skill(workspace, command: str, value: str) -> None
         f"class {command.title()}Skill(Skill):\n"
         f"    @slash_command('{command}', output_to_agent=False)\n"
         "    def run(self, args: str) -> str:\n"
-        f"        return '{value}:' + args\n"
+        f"        return '{value}:' + args\n",
+        encoding="utf-8",
     )
     config_dir = workspace / ".nooa"
     config_dir.mkdir()
     (config_dir / "settings.yaml").write_text(
-        f"coding:\n  additional_skills_dirs:\n    - {skills_root}\n"
+        f"coding:\n  additional_skills_dirs:\n    - {skills_root}\n", encoding="utf-8"
     )
 
 
@@ -240,21 +244,23 @@ def _write_packaged_command_skill(workspace, value: str) -> None:
     (checkout / "pyproject.toml").write_text(
         '[project]\nname = "workflow-distribution"\n\n'
         '[project.entry-points."nooa.skills"]\n'
-        '"test.workflow" = "shared_workflow:WorkflowSkill"\n'
+        '"test.workflow" = "shared_workflow:WorkflowSkill"\n',
+        encoding="utf-8",
     )
-    (package / "helper.py").write_text(f"VALUE = {value!r}\n")
+    (package / "helper.py").write_text(f"VALUE = {value!r}\n", encoding="utf-8")
     (package / "__init__.py").write_text(
         "from nooa.skill import Skill, slash_command\n\n"
         "class WorkflowSkill(Skill):\n"
         "    @slash_command('workflow', output_to_agent=False)\n"
         "    def run(self, args: str) -> str:\n"
         "        from shared_workflow.helper import VALUE\n"
-        "        return VALUE + ':' + args\n"
+        "        return VALUE + ':' + args\n",
+        encoding="utf-8",
     )
     config_dir = workspace / ".nooa"
     config_dir.mkdir()
     (config_dir / "settings.yaml").write_text(
-        f"coding:\n  additional_skills_dirs:\n    - {skills_root}\n"
+        f"coding:\n  additional_skills_dirs:\n    - {skills_root}\n", encoding="utf-8"
     )
 
 
@@ -270,8 +276,10 @@ async def test_adapter_completes_one_session_prompt(tmp_path):
     assert initialized.protocol_version == PROTOCOL_VERSION
     assert initialized.agent_info is not None
     assert initialized.agent_info.name == "nooa-acp"
+    assert initialized.agent_capabilities is not None
     assert initialized.agent_capabilities.load_session is True
     capabilities = initialized.agent_capabilities.session_capabilities
+    assert capabilities is not None
     assert capabilities.list is not None
     assert capabilities.close is not None
     assert response.stop_reason == "end_turn"
@@ -657,7 +665,8 @@ async def test_adapter_replaces_advertised_commands_after_skill_reload(tmp_path,
         "    @slash_command('repair', argument_hint='<mode>')\n"
         "    def repair(self, args: str) -> str:\n"
         '        """Repair the workspace."""\n'
-        "        return f'Repair using {args} mode (reloaded).'\n"
+        "        return f'Repair using {args} mode (reloaded).'\n",
+        encoding="utf-8",
     )
     stat = module.stat()
     os.utime(module, (stat.st_atime + 2, stat.st_mtime + 2))
@@ -695,7 +704,7 @@ async def test_failed_skill_reload_keeps_previous_command_and_advertisement(tmp_
     client.updates.clear()
 
     module = skills_root / "workflow_skill" / "__init__.py"
-    module.write_text("this is not valid Python !!!\n")
+    module.write_text("this is not valid Python !!!\n", encoding="utf-8")
     stat = module.stat()
     os.utime(module, (stat.st_atime + 2, stat.st_mtime + 2))
 
@@ -1008,7 +1017,9 @@ async def test_adapter_rejects_conflicting_packaged_skills_without_contamination
     with pytest.raises(RequestError) as error:
         await adapter.new_session(str(beta))
     assert error.value.code == -32600
-    assert "Launch a separate ACP server" in error.value.data["reason"]
+    data = error.value.data
+    assert data is not None
+    assert "Launch a separate ACP server" in data["reason"]
 
     alpha_response = await adapter.prompt(
         alpha_session.session_id,
@@ -1456,11 +1467,11 @@ async def test_replay_separates_consecutive_turns_from_one_speaker(tmp_path):
     client.updates.clear()
     await adapter.load_session(str(tmp_path), created.session_id)
 
-    replayed = [
-        update.content.text
-        for update in client.updates
-        if type(update).__name__ == "UserMessageChunk"
-    ]
+    replayed = []
+    for update in client.updates:
+        if isinstance(update, UserMessageChunk):
+            assert isinstance(update.content, TextContentBlock)
+            replayed.append(update.content.text)
     assert len(replayed) == 2, replayed
     assert "firstsecond" not in "".join(replayed)
     await adapter.close()
@@ -1477,6 +1488,7 @@ async def test_initialize_advertises_the_mcp_transports_it_supports():
     adapter = CodingACPAdapter(_completed_llm)
     initialized = await adapter.initialize(PROTOCOL_VERSION)
 
+    assert initialized.agent_capabilities is not None
     mcp = initialized.agent_capabilities.mcp_capabilities
     assert mcp is not None, "no MCP capabilities advertised at all"
     assert mcp.http is True

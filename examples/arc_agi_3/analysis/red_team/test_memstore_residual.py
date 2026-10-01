@@ -38,7 +38,7 @@ def main() -> int:
     store.mkdir()
     os.chmod(store, 0o1733)  # as uid_sandbox.shared_writable does
     f = store / "game-deadbeef.sqlite"
-    f.write_text("SQLite format 3\x00...")
+    f.write_text("SQLite format 3\x00...", encoding="utf-8")
     os.chown(f, 50100, 50100)
     os.chmod(f, 0o644)  # created by the owning game's uid
 
@@ -63,7 +63,7 @@ def main() -> int:
 
     other = 50200
     enumerated = as_uid(other, lambda: ",".join(os.listdir(store)))
-    read_by_name = as_uid(other, lambda: f.read_text()[:15])
+    read_by_name = as_uid(other, lambda: f.read_text(encoding="utf-8")[:15])
     print(f"  other uid enumerates store dir -> {enumerated!r}  (want EACCES: no-list)")
     print(f"  other uid reads store BY NAME  -> {read_by_name!r}  (0644 -> readable; residual)")
 

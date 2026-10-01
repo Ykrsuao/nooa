@@ -19,7 +19,7 @@ import asyncio
 import os
 import threading
 import weakref
-from multiprocessing.connection import Connection
+from multiprocessing.connection import _ConnectionBase as Connection
 from typing import Any, cast
 
 from nooa.errors.formatting import IPythonErrorFormatter
@@ -57,10 +57,11 @@ class ChildBroker:
     without their intermediate objects ever crossing the process boundary.
     """
 
-    def __init__(self, conn: Connection, send_lock: threading.RLock):
+    def __init__(self, conn: Connection, send_lock: threading.RLock, *, root: str = "agent"):
         self._conn = conn
         self._send_lock = send_lock
         self._n = 0
+        self._root = root
 
     def _rpc(self, envelope: dict[str, Any], payload: Any = _NO_PAYLOAD) -> dict[str, Any]:
         # The cell's value (call arguments or an assigned attribute) is encoded
@@ -72,6 +73,7 @@ class ChildBroker:
             self._n += 1
             call_id = self._n
             envelope["tool_call_id"] = call_id
+            envelope["root"] = self._root
             if payload is not _NO_PAYLOAD:
                 try:
                     envelope["payload"] = _CODEC.dumps(payload)
@@ -115,6 +117,8 @@ class ChildBroker:
     def get_attr(self, path: list[str]) -> tuple[Any, bool]:
         """Return ``(value, is_proxy)``: the picklable value, or a nested-proxy marker."""
         resp = self._rpc({"type": "tool_call", "kind": "attr", "path": path})
+        if resp.get("callable"):
+            return _BrokerCallable(self, path, bool(resp.get("is_async"))), False
         return resp.get("result"), bool(resp.get("proxy"))
 
     def set_attr(self, path: list[str], value: Any) -> None:
@@ -166,14 +170,12 @@ def _raise_broker_error(response: dict[str, Any]) -> None:
 
 
 def _is_async_callable(obj: Any) -> bool:
-    """True if calling ``obj`` yields a coroutine (``async def`` method/function).
-
-    Callable *instances* whose ``__call__`` is async are not detected here; agent
-    tools and generation methods are plain ``async def`` methods, which are.
-    """
+    """Detect async methods/functions and instances with an async ``__call__``."""
     import inspect
 
-    return inspect.iscoroutinefunction(obj)
+    return inspect.iscoroutinefunction(obj) or (
+        callable(obj) and inspect.iscoroutinefunction(obj.__call__)
+    )
 
 
 class _BrokerCallable:
@@ -359,6 +361,8 @@ def build_namespace(
     framework_builtins: dict[str, Any],
     proxy: ParentAgentProxy,
     restrictions: Any,
+    *,
+    module_globals: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the worker's persistent cell namespace, mirroring actor exec_globals."""
     import typing as _typing
@@ -387,7 +391,9 @@ def build_namespace(
     )
     from nooa.strategies.pure_python import PurePythonStrategy
 
-    ns: dict[str, Any] = freeze_module_state(filter_mro_module_globals(type(agent)))
+    ns: dict[str, Any] = freeze_module_state(
+        filter_mro_module_globals(type(agent)) if module_globals is None else module_globals
+    )
     ns.update(
         {
             "self": proxy,
@@ -449,6 +455,13 @@ def worker_main(conn: Connection, init: dict[str, Any]) -> None:  # pragma: no c
             pass
         os._exit(3)
 
+    serve_cells(conn, namespace, init)
+
+
+def serve_cells(
+    conn: Connection, namespace: dict[str, Any], init: dict[str, Any]
+) -> None:  # pragma: no cover - child
+    """Shared cell loop; launchers finish bootstrap/guards before entering it."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -483,6 +496,7 @@ def worker_main(conn: Connection, init: dict[str, Any]) -> None:  # pragma: no c
             )
     finally:
         loop.close()
+        conn.close()
 
 
 def _run_one(

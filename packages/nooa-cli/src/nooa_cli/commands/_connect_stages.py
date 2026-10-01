@@ -23,7 +23,7 @@ def read_discovery(path, endpoint):
 
     from nooa.unifiedllm import connect
 
-    document = json.loads(Path(path).read_text())
+    document = json.loads(Path(path).read_text(encoding="utf-8"))
     data = document.get("data", document)
     if (
         not isinstance(data, dict)
@@ -98,7 +98,7 @@ def run_stage(
         if stage == "save":
             if not input_file or not output:
                 raise click.UsageError("Save requires --input and --output")
-            document = json.loads(Path(input_file).read_text())
+            document = json.loads(Path(input_file).read_text(encoding="utf-8"))
             data = document.get("data", document)
             if (
                 not isinstance(data, dict)
@@ -119,7 +119,7 @@ def run_stage(
             path = Path(output)
             existing = {}
             if path.exists():
-                with path.open() as source:
+                with path.open(encoding="utf-8") as source:
                     existing = yaml.safe_load(source) or {}
             if alias in (existing.get("models") or {}):
                 if not yes:
@@ -155,7 +155,7 @@ def run_stage(
             budget = connect.DEFAULT_CHECK_BUDGET if budget_tokens is None else budget_tokens
             levels = None
             if levels_file:
-                with Path(levels_file).open() as source:
+                with Path(levels_file).open(encoding="utf-8") as source:
                     levels = yaml.safe_load(source)
             proposal = connect.plan(
                 alias or "candidate",

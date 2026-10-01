@@ -14,6 +14,9 @@ import pytest
 RUN_SOLVER = Path(__file__).resolve().parents[1] / "examples/arc_agi_3/run_solver.py"
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="the ARC runner is POSIX-only (symlinks, SIGHUP, pdeathsig)"
+)
 @pytest.mark.parametrize("harness_exit", [0, 1], ids=["harness-success", "harness-nonzero"])
 @pytest.mark.parametrize("has_result", [False, True], ids=["missing-result", "valid-result"])
 def test_run_solver_exit_requires_result(tmp_path, monkeypatch, harness_exit, has_result):
@@ -49,7 +52,7 @@ def test_run_solver_exit_requires_result(tmp_path, monkeypatch, harness_exit, ha
         log_handles.append(kwargs["stdout"])
         if Path(command[1]).name == "harness.py":
             if has_result:
-                (neutral / "result.json").write_text(json.dumps(result))
+                (neutral / "result.json").write_text(json.dumps(result), encoding="utf-8")
             return harness
         assert Path(command[1]).name == "launcher.py"
         return launcher
@@ -83,7 +86,7 @@ def test_run_solver_exit_requires_result(tmp_path, monkeypatch, harness_exit, ha
     assert all(not directory.exists() for directory in neutral_dirs)
     [run_dir] = results_root.glob("nemo_solver/*_synthetic_mdfiles")
     if has_result:
-        assert json.loads((run_dir / "result.json").read_text()) == result
+        assert json.loads((run_dir / "result.json").read_text(encoding="utf-8")) == result
         assert exit_code == 0
     else:
         assert not (run_dir / "result.json").exists()

@@ -11,8 +11,6 @@ Tests verify:
 """
 
 import asyncio
-import os
-import signal
 
 import pytest
 
@@ -33,7 +31,7 @@ class TestAutoRecoveryFromDeadProcess:
 
     async def test_recovers_after_process_killed(self, session):
         """After killing the bash process, the next command should still work."""
-        os.kill(session._process.pid, signal.SIGKILL)
+        session._process.kill()
         await asyncio.sleep(0.1)
 
         stdout, stderr, code = await session.run("echo recovered")
@@ -99,11 +97,11 @@ class TestEOFExitCode:
     async def test_killed_process_returns_nonzero(self, session):
         """If bash is killed during execution, exit code should be non-zero."""
         # Kill bash while it's running a sleep
-        pid = session._process.pid
+        proc = session._process
 
         async def kill_later():
             await asyncio.sleep(0.5)
-            os.kill(pid, signal.SIGKILL)
+            proc.kill()
 
         asyncio.ensure_future(kill_later())
         stdout, stderr, code = await session.run("sleep 10", timeout=5.0)
@@ -130,8 +128,8 @@ class TestPipelinesAndRedirects:
     async def test_stdin_redirect_from_file(self, session, tmp_path):
         """Explicit stdin redirect from a file should work."""
         test_file = tmp_path / "input.txt"
-        test_file.write_text("file_content\n")
-        stdout, stderr, code = await session.run(f"cat < {test_file}")
+        test_file.write_text("file_content\n", encoding="utf-8")
+        stdout, stderr, code = await session.run(f"cat < {test_file.as_posix()}")
         assert "file_content" in stdout
 
     async def test_heredoc(self, session):

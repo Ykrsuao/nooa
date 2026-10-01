@@ -3,6 +3,7 @@
 """Review regressions exercise persistence and actual configured requests."""
 
 import json
+import sys
 from dataclasses import replace
 
 import httpx
@@ -23,28 +24,37 @@ def test_writers_follow_symlinks_and_registry_preserves_mode_and_newlines(tmp_pa
     target.write_bytes(b"# preserved\r\nmodels: {}\r\n")
     target.chmod(0o640)
     link = tmp_path / "linked.yaml"
-    link.symlink_to(target)
+    try:
+        link.symlink_to(target)
+    except OSError as exc:  # Windows without admin rights or Developer Mode
+        pytest.skip(f"cannot create symlinks: {exc}")
     connect.write(proposal().entry, link, alias="test")
     assert link.is_symlink()
-    assert "test" in yaml.safe_load(target.read_text())["models"]
-    assert target.stat().st_mode & 0o777 == 0o640
+    assert "test" in yaml.safe_load(target.read_text(encoding="utf-8"))["models"]
+    posix_modes = sys.platform != "win32"  # Windows has no Unix permission bits
+    if posix_modes:
+        assert target.stat().st_mode & 0o777 == 0o640
     assert target.read_bytes().startswith(b"# preserved\r\n")
     assert b"\n" not in target.read_bytes().replace(b"\r\n", b"")
     secret_target = tmp_path / "real-secrets.yaml"
-    secret_target.write_text("env: {}\n")
+    secret_target.write_text("env: {}\n", encoding="utf-8")
     secret_link = tmp_path / "secrets.yaml"
     secret_link.symlink_to(secret_target)
     write_secret_env(secret_link, "TEST_KEY", "test-only-value")
     assert secret_link.is_symlink()
-    assert yaml.safe_load(secret_target.read_text())["env"]["TEST_KEY"] == "test-only-value"
-    assert secret_target.stat().st_mode & 0o777 == 0o600
+    assert (
+        yaml.safe_load(secret_target.read_text(encoding="utf-8"))["env"]["TEST_KEY"]
+        == "test-only-value"
+    )
+    if posix_modes:
+        assert secret_target.stat().st_mode & 0o777 == 0o600
 
 
 def test_null_models_mapping_is_an_empty_registry(tmp_path):
     path = tmp_path / "models.yaml"
-    path.write_text("models:\n")
+    path.write_text("models:\n", encoding="utf-8")
     connect.write(proposal().entry, path, alias="test")
-    assert "test" in yaml.safe_load(path.read_text())["models"]
+    assert "test" in yaml.safe_load(path.read_text(encoding="utf-8"))["models"]
 
 
 @pytest.mark.parametrize("cap", [32768, 65536])

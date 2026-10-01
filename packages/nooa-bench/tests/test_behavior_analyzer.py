@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from nooa_bench import runner
@@ -125,7 +126,8 @@ def test_trajectory_analysis_and_grouped_aggregation(tmp_path: Path) -> None:
                 _cell("self.v.answer = 42"),
                 {"event_type": "ToolCallEvent", "name": "return_result", "arguments": {}},
             ]
-        )
+        ),
+        encoding="utf-8",
     )
 
     first = analyze_trajectory(path, model="m", agent_type="bench", change_id="before")
@@ -147,7 +149,7 @@ def test_trajectory_analysis_and_grouped_aggregation(tmp_path: Path) -> None:
     assert rows[0]["mean_rates"]["completion_rate"] == 0.5
 
     artifact = tmp_path / "behavior.json"
-    artifact.write_text(json.dumps(first.to_dict()))
+    artifact.write_text(json.dumps(first.to_dict()), encoding="utf-8")
     assert aggregate_behavior_paths([artifact]) == aggregate_reports([first])
 
 
@@ -175,7 +177,7 @@ def test_runner_writes_behavior_artifact_from_serialized_trajectory(
     runner._write_trajectory(agent)
     runner._write_behavior_report("model-z", "rlm")
 
-    payload = json.loads((tmp_path / "behavior.json").read_text())
+    payload = json.loads((tmp_path / "behavior.json").read_text(encoding="utf-8"))
     assert payload["model"] == "model-z"
     assert payload["agent_type"] == "rlm"
     assert payload["change_id"] == "prompt-v2"
@@ -287,7 +289,7 @@ def test_real_export_preserves_only_metric_classification_metadata(tmp_path, mon
     from nooa.context_blocks import ToolCallEvent
     from nooa.events import PythonOutput, ResultStatus
 
-    events = [
+    events: list[ToolCallEvent | PythonOutput] = [
         ToolCallEvent(
             tool_call_id="prefill",
             name="python_cell",
@@ -319,7 +321,7 @@ def test_real_export_preserves_only_metric_classification_metadata(tmp_path, mon
     for event in events:
         manager.add(event)
     runner._write_trajectory(SimpleNamespace(event_manager=manager))
-    raw = (tmp_path / "trajectory.json").read_text()
+    raw = (tmp_path / "trajectory.json").read_text(encoding="utf-8")
     assert "private-sentinel" not in raw
     report = analyze_trajectory(tmp_path / "trajectory.json")
     assert report.signals["python_cells"] == 1
@@ -355,17 +357,17 @@ def test_ordinary_output_does_not_count_as_a_framework_diagnostic(output):
 
 
 def test_malformed_events_do_not_discard_valid_cells():
-    report = analyze_events(
-        [
-            None,
-            "broken",
-            [],
-            3,
-            {"event_type": "ToolCallEvent", "name": []},
-            {"event_type": "ToolCallEvent", "name": "python_cell", "arguments": [1]},
-            _cell("self.todo.status()"),
-        ]
-    )
+    # Invalid input types deliberately exercise the analyzer's defensive boundary.
+    events: list[Any] = [
+        None,
+        "broken",
+        [],
+        3,
+        {"event_type": "ToolCallEvent", "name": []},
+        {"event_type": "ToolCallEvent", "name": "python_cell", "arguments": [1]},
+        _cell("self.todo.status()"),
+    ]
+    report = analyze_events(events)
     assert report.signals["python_cells"] == 1
 
 
@@ -424,7 +426,7 @@ self.repo.find_refs('not an API')
 )
 def test_report_loader_rejects_incompatible_artifacts(tmp_path, patch):
     path = tmp_path / "behavior.json"
-    path.write_text(json.dumps({**analyze_events([]).to_dict(), **patch}))
+    path.write_text(json.dumps({**analyze_events([]).to_dict(), **patch}), encoding="utf-8")
     with pytest.raises(ValueError, match="unsupported behavior"):
         load_behavior_report(path)
 
@@ -444,20 +446,23 @@ def test_export_counts_archived_events_and_preserves_real_ids(tmp_path, monkeypa
     monkeypatch.setattr(runner, "LOGS_DIR", tmp_path)
     runner._write_trajectory(SimpleNamespace(event_manager=manager))
     path = tmp_path / "trajectory.json"
-    payload = json.loads(path.read_text())
+    payload = json.loads(path.read_text(encoding="utf-8"))
     assert {event.id for event in events} <= {row["event_id"] for row in payload}
     assert analyze_trajectory(path).signals["python_cells"] == 5
 
 
 def test_trajectory_serialization_failure_is_nonfatal(tmp_path, monkeypatch):
-    from nooa.events import PythonOutput
+    from nooa.events import PythonOutput, ResultStatus
 
     circular = []
     circular.append(circular)
     manager = EventManager()
     manager.add(
         PythonOutput(
-            tool_call_id="c", execution_count=1, execution_status="complete", value=circular
+            tool_call_id="c",
+            execution_count=1,
+            execution_status=ResultStatus.COMPLETE,
+            value=circular,
         )
     )
     monkeypatch.setattr(runner, "LOGS_DIR", tmp_path)

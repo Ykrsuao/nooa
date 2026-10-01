@@ -35,8 +35,6 @@ from typing import Any
 import click
 from pydantic import BaseModel
 
-from nooa.agentdoc._visibility import is_hidden_field
-
 logger = logging.getLogger("nooa_bench.runner")
 
 # Harbor container path conventions.
@@ -55,7 +53,7 @@ def _setup_logging() -> None:
     handlers: list[logging.Handler] = [logging.StreamHandler(sys.stderr)]
     try:
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
-        handlers.append(logging.FileHandler(str(LOGS_DIR / "nooa_bench.log")))
+        handlers.append(logging.FileHandler(str(LOGS_DIR / "nooa_bench.log"), encoding="utf-8"))
     except OSError:
         # Outside a Harbor container /logs may not exist or be writable — stderr only.
         pass
@@ -137,7 +135,7 @@ def _write_result(result: dict[str, Any], model: str, agent_type: str) -> None:
         "n_output_tokens": result.get("n_output_tokens"),
     }
     out = LOGS_DIR / "result.json"
-    out.write_text(json.dumps(payload, indent=2))
+    out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     logger.info("Result written → %s", out)
 
 
@@ -149,6 +147,8 @@ def _public_json_default(value: Any) -> Any:
     json.dumps recursively applies this function to each nested model.
     """
     if isinstance(value, BaseModel):
+        from nooa.agentdoc._visibility import is_hidden_field
+
         fields = type(value).model_fields
         values = (
             value.__instance_values__()
@@ -206,7 +206,7 @@ def _write_trajectory(agent: Any, *, filename: str = "trajectory.json") -> bool:
         return False
 
     try:
-        out.write_text(json.dumps(events, indent=2, default=_public_json_default))
+        out.write_text(json.dumps(events, indent=2, default=_public_json_default), encoding="utf-8")
     except Exception as e:  # debug serialization must not invalidate a completed task
         logger.warning("Could not write %s: %s", out, e)
         return False
@@ -235,7 +235,7 @@ def _write_behavior_report(
             task_id=os.environ.get("NOOA_TASK_ID"),
         )
         out = LOGS_DIR / "behavior.json"
-        out.write_text(json.dumps(report.to_dict(), indent=2))
+        out.write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
     except Exception as e:  # noqa: BLE001 - analysis must not fail the benchmark
         logger.warning("Could not write interface behavior report: %s", e)
         return
@@ -250,7 +250,7 @@ def _write_answer(result: dict[str, Any]) -> None:
         return
     try:
         ANSWER_FILE.parent.mkdir(parents=True, exist_ok=True)
-        ANSWER_FILE.write_text(str(answer))
+        ANSWER_FILE.write_text(str(answer), encoding="utf-8")
         logger.info("Answer written → %s", ANSWER_FILE)
     except OSError as e:
         logger.warning("Could not write answer file %s: %s", ANSWER_FILE, e)
@@ -285,17 +285,6 @@ async def _run(
         AgentClass = _import_agent_class(agent_type)
         agent = AgentClass(llm=llm_client)
 
-        if enable_atif:
-            from nooa.atif import atif_scope
-
-            trajectory_path = LOGS_DIR / "trajectory.json"
-            try:
-                trajectory_path.unlink(missing_ok=True)
-                (LOGS_DIR / "trajectory.nooa.json").unlink(missing_ok=True)
-                (LOGS_DIR / "behavior.json").unlink(missing_ok=True)
-            except OSError as e:
-                logger.warning("Could not invalidate old trajectory artifacts: %s", e)
-
         # All agents share the same interface: {"user_message": instruction}.
         # Benchmark-specific parsing (system prompts, data paths, etc.) happens
         # inside the agent's _run_evaluation method.
@@ -307,6 +296,15 @@ async def _run(
         if working_dir:
             task_input["working_dir"] = working_dir
         if enable_atif:
+            from nooa.atif import atif_scope
+
+            trajectory_path = LOGS_DIR / "trajectory.json"
+            try:
+                trajectory_path.unlink(missing_ok=True)
+                (LOGS_DIR / "trajectory.nooa.json").unlink(missing_ok=True)
+                (LOGS_DIR / "behavior.json").unlink(missing_ok=True)
+            except OSError as e:
+                logger.warning("Could not invalidate old trajectory artifacts: %s", e)
             async with atif_scope(
                 agent,
                 path=LOGS_DIR / "trajectory.json",

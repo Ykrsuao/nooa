@@ -22,7 +22,8 @@ class TestLoadConfig:
     def test_loads_basic_config(self, tmp_path):
         """Basic config is loaded correctly with dict model format."""
         config_file = tmp_path / "config.yaml"
-        config_file.write_text("""
+        config_file.write_text(
+            """
 name: test_eval
 description: "Test evaluation"
 output_dir: experiments
@@ -53,7 +54,9 @@ test_suite:
       - name: exact_match
         class: ExactMatchScorer
         weight: 1.0
-""")
+""",
+            encoding="utf-8",
+        )
         config = load_config(config_file)
 
         assert config.name == "test_eval"
@@ -82,7 +85,8 @@ test_suite:
     def test_loads_config_without_models(self, tmp_path):
         """Config without models defaults to empty list."""
         config_file = tmp_path / "config.yaml"
-        config_file.write_text("""
+        config_file.write_text(
+            """
 name: test_eval
 test_suite:
   - name: test1
@@ -92,14 +96,17 @@ test_suite:
     method: run
     data_file: data.jsonl
     scorers: []
-""")
+""",
+            encoding="utf-8",
+        )
         config = load_config(config_file)
         assert config.models == {}
 
     def test_loads_config_with_limit(self, tmp_path):
         """Limit is loaded from config."""
         config_file = tmp_path / "config.yaml"
-        config_file.write_text("""
+        config_file.write_text(
+            """
 name: test_eval
 test_suite:
   - name: test1
@@ -110,21 +117,26 @@ test_suite:
     data_file: data.jsonl
     limit: 10
     scorers: []
-""")
+""",
+            encoding="utf-8",
+        )
         config = load_config(config_file)
         assert config.tests[0].limit == 10
 
     def test_defaults_for_missing_fields(self, tmp_path):
         """Missing optional fields get defaults."""
         config_file = tmp_path / "config.yaml"
-        config_file.write_text("""
+        config_file.write_text(
+            """
 test_suite:
   - name: test1
     agent:
       module: my_module
       class: MyAgent
     data_file: data.jsonl
-""")
+""",
+            encoding="utf-8",
+        )
         config = load_config(config_file)
 
         assert config.name == "eval"  # default
@@ -137,7 +149,8 @@ test_suite:
     def test_multiple_tests(self, tmp_path):
         """Multiple tests are loaded."""
         config_file = tmp_path / "config.yaml"
-        config_file.write_text("""
+        config_file.write_text(
+            """
 name: multi_test
 test_suite:
   - name: test1
@@ -155,7 +168,9 @@ test_suite:
       module: mod3
       class: Agent3
     data_file: data3.jsonl
-""")
+""",
+            encoding="utf-8",
+        )
         config = load_config(config_file)
 
         assert len(config.tests) == 3
@@ -175,7 +190,8 @@ class TestLoadTasks:
         data_file = tmp_path / "data.jsonl"
         data_file.write_text(
             '{"args": [], "kwargs": {"text": "hello"}, "expected": "positive"}\n'
-            '{"args": [], "kwargs": {"text": "world"}, "expected": "negative"}\n'
+            '{"args": [], "kwargs": {"text": "world"}, "expected": "negative"}\n',
+            encoding="utf-8",
         )
         tasks = load_tasks(data_file)
 
@@ -191,7 +207,8 @@ class TestLoadTasks:
         data_file.write_text(
             '{"args": [], "kwargs": {"x": 1}, "expected": 1}\n'
             '{"args": [], "kwargs": {"x": 2}, "expected": 2}\n'
-            '{"args": [], "kwargs": {"x": 3}, "expected": 3}\n'
+            '{"args": [], "kwargs": {"x": 3}, "expected": 3}\n',
+            encoding="utf-8",
         )
         tasks = load_tasks(data_file)
 
@@ -207,7 +224,8 @@ class TestLoadTasks:
             '{"args": [], "kwargs": {"x": 2}, "expected": 2}\n'
             '{"args": [], "kwargs": {"x": 3}, "expected": 3}\n'
             '{"args": [], "kwargs": {"x": 4}, "expected": 4}\n'
-            '{"args": [], "kwargs": {"x": 5}, "expected": 5}\n'
+            '{"args": [], "kwargs": {"x": 5}, "expected": 5}\n',
+            encoding="utf-8",
         )
         tasks = load_tasks(data_file, limit=2)
 
@@ -218,7 +236,9 @@ class TestLoadTasks:
     def test_handles_empty_args(self, tmp_path):
         """Missing args defaults to empty tuple."""
         data_file = tmp_path / "data.jsonl"
-        data_file.write_text('{"kwargs": {"text": "hello"}, "expected": "result"}\n')
+        data_file.write_text(
+            '{"kwargs": {"text": "hello"}, "expected": "result"}\n', encoding="utf-8"
+        )
         tasks = load_tasks(data_file)
 
         assert tasks[0].input == ((), {"text": "hello"})
@@ -226,7 +246,7 @@ class TestLoadTasks:
     def test_handles_empty_kwargs(self, tmp_path):
         """Missing kwargs defaults to empty dict."""
         data_file = tmp_path / "data.jsonl"
-        data_file.write_text('{"args": ["hello"], "expected": "result"}\n')
+        data_file.write_text('{"args": ["hello"], "expected": "result"}\n', encoding="utf-8")
         tasks = load_tasks(data_file)
 
         assert tasks[0].input == (("hello",), {})
@@ -235,7 +255,8 @@ class TestLoadTasks:
         """Both args and kwargs are loaded."""
         data_file = tmp_path / "data.jsonl"
         data_file.write_text(
-            '{"args": ["arg1", "arg2"], "kwargs": {"key": "value"}, "expected": "result"}\n'
+            '{"args": ["arg1", "arg2"], "kwargs": {"key": "value"}, "expected": "result"}\n',
+            encoding="utf-8",
         )
         tasks = load_tasks(data_file)
 
@@ -244,7 +265,7 @@ class TestLoadTasks:
     def test_empty_file_returns_empty_list(self, tmp_path):
         """Empty file returns empty list."""
         data_file = tmp_path / "data.jsonl"
-        data_file.write_text("")
+        data_file.write_text("", encoding="utf-8")
         tasks = load_tasks(data_file)
 
         assert tasks == []

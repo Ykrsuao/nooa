@@ -95,11 +95,11 @@ def _build_game(results: Path, game: str, uid: int) -> Path:
     run = mem / f"20260710_{game}_memory"
     run.mkdir(parents=True)
     (run / "ipc").mkdir()
-    (run / "ipc" / "states.jsonl").write_text('{"own":1}\n')
+    (run / "ipc" / "states.jsonl").write_text('{"own":1}\n', encoding="utf-8")
     harness = mem / "_harness"
     harness.mkdir()
     log = harness / f"20260710_{game}_memory.log"
-    log.write_text("INFO:arc_agi.scorecard:init\n" + HARNESS_LINE * 3)
+    log.write_text("INFO:arc_agi.scorecard:init\n" + HARNESS_LINE * 3, encoding="utf-8")
     # root creates the harness tree 0755/0644 (the default) — the exposure
     os.chown(harness, 0, 0)
     os.chmod(harness, 0o755)
@@ -114,7 +114,7 @@ def _read_own_harness(run: Path):
     """What the agent can do from its OWN run dir: ../_harness/<log> (fixed name)."""
     hd = run.parent / "_harness"
     fn = os.listdir(hd)  # 0755 -> listable
-    t = (hd / fn[0]).read_text()  # 0644 -> readable
+    t = (hd / fn[0]).read_text(encoding="utf-8")  # 0644 -> readable
     for line in t.splitlines():
         if "resolved game" in line:
             return line.split("resolved game ", 1)[1][:40]
@@ -170,7 +170,9 @@ def main() -> int:
     # ---- 4) the fix must NOT break the harness (root) or the agent's own run
     root_still = runs["ar25"].parent / "_harness"
     root_reads = root_still.exists() and any(root_still.iterdir())  # root unaffected
-    own_run_ok = _as_uid(games["ar25"], lambda: open(runs["ar25"] / "ipc" / "states.jsonl").read(4))
+    own_run_ok = _as_uid(
+        games["ar25"], lambda: open(runs["ar25"] / "ipc" / "states.jsonl", encoding="utf-8").read(4)
+    )
     print(
         f"  [{'ok  ' if root_reads else 'FAIL'}] root harness still reads _harness    -> {root_reads}"
     )

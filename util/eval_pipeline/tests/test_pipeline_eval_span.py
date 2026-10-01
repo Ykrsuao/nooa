@@ -61,7 +61,7 @@ class TestProcessSampleEvalSpan:
             # Create the trace file that the pipeline expects
             trace_file = kwargs.get("trace_file")
             if trace_file:
-                trace_file.write_text("")
+                trace_file.write_text("", encoding="utf-8")
             return mock_result
 
         monkeypatch.setattr("eval_pipeline.pipeline.execute_task", mock_execute_task)
@@ -121,7 +121,7 @@ class TestProcessSampleEvalSpan:
         trace_file = trace_files[0]
 
         # Verify trace file has eval span (OTLP format: one TracesData line per write)
-        content = trace_file.read_text()
+        content = trace_file.read_text(encoding="utf-8")
         lines = [line for line in content.strip().split("\n") if line]
 
         eval_attrs = None

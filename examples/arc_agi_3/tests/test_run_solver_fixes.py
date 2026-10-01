@@ -68,7 +68,7 @@ def test_broker_stdin_wait_catches_keyboardinterrupt():
     """The stdin-wait must swallow KeyboardInterrupt so teardown/close runs. We
     replicate the exact guard and assert a KeyboardInterrupt raised inside does
     NOT escape (the pre-fix ``except Exception`` let it through)."""
-    src = (EXAMPLE_DIR / "scorecard_broker.py").read_text()
+    src = (EXAMPLE_DIR / "scorecard_broker.py").read_text(encoding="utf-8")
     assert "except (Exception, KeyboardInterrupt):" in src, (
         "broker stdin wait must catch KeyboardInterrupt, not just Exception"
     )
@@ -100,7 +100,7 @@ def test_uid_drop_blocks_game_source_read(tmp_path):
     src = tmp_path / "environment_files"
     src.mkdir()
     secret = src / "ls20.py"
-    secret.write_text("SOLUTION = 42")
+    secret.write_text("SOLUTION = 42", encoding="utf-8")
     uid_sandbox.block([src])
 
     uid = 47001
@@ -114,7 +114,7 @@ def test_uid_drop_blocks_game_source_read(tmp_path):
                 os.setgroups([])
                 os.setgid(uid)
                 os.setuid(uid)
-                msg = secret.read_text().encode()
+                msg = secret.read_text(encoding="utf-8").encode()
             except OSError as e:
                 msg = f"EACCES({e.errno})".encode()
             os.write(w, msg[:32])
@@ -135,7 +135,7 @@ def test_carve_own_gives_uid_its_own_run_dir(tmp_path):
     parent.mkdir()
     run = parent / "arc_run_game-abc123"
     (run / "ipc").mkdir(parents=True)
-    (run / "ipc" / "states.jsonl").write_text("{}")
+    (run / "ipc" / "states.jsonl").write_text("{}", encoding="utf-8")
 
     uid = 47002
     uid_sandbox.carve_own(run, uid, uid, up_to=parent)

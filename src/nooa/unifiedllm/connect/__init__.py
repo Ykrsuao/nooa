@@ -1734,10 +1734,9 @@ def write(entry: dict, path: Path, *, alias: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     # Lock a stable sidecar inode, not the registry inode replaced atomically.
     # Keep the lock file: unlinking it would let a third writer bypass waiters.
-    import fcntl
+    from nooa._filelock import locked
 
-    with path.with_name(f".{path.name}.lock").open("a") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+    with path.with_name(f".{path.name}.lock").open("ab") as lock, locked(lock.fileno()):
         _write_entry(entry, path, alias=alias)
 
 
@@ -1816,8 +1815,15 @@ def _write_entry(entry: dict, path: Path, *, alias: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = None
     try:
+        # newline="": line endings are chosen explicitly below; text-mode
+        # translation would turn them into "\r\r\n" on Windows.
         with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=path.parent, prefix=path.name + ".", delete=False
+            mode="w",
+            encoding="utf-8",
+            newline="",
+            dir=path.parent,
+            prefix=path.name + ".",
+            delete=False,
         ) as temporary:
             temporary_path = Path(temporary.name)
             temporary.write(text.replace("\n", newline))

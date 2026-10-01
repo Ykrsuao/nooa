@@ -48,7 +48,7 @@ def _traces_contain(run: Path, needle: str) -> int:
     bytes sent to the model) across a run's OTLP traces."""
     hits = 0
     for f in (run / "traces").glob("*.jsonl"):
-        for line in f.read_text(errors="ignore").splitlines():
+        for line in f.read_text(errors="ignore", encoding="utf-8").splitlines():
             try:
                 doc = json.loads(line)
             except json.JSONDecodeError:
@@ -106,10 +106,10 @@ def test_offline_run_makes_progress(tmp_path: Path) -> None:
     assert run_dirs, "no run directory was created"
     run = run_dirs[0]
 
-    gameplay = json.loads((run / "gameplay.json").read_text())
+    gameplay = json.loads((run / "gameplay.json").read_text(encoding="utf-8"))
     assert gameplay.get("total_steps", 0) >= 1, f"agent took no env steps: {gameplay}"
 
-    actions = (run / "ipc" / "actions.jsonl").read_text().strip().splitlines()
+    actions = (run / "ipc" / "actions.jsonl").read_text(encoding="utf-8").strip().splitlines()
     assert actions, "agent submitted no action batches"
 
     # --- regression: the real game name must NEVER reach the model (finding F-A).

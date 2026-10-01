@@ -442,7 +442,7 @@ class TestDebugHandlerTracebackException:
 
             _debug_signal_handler(12, mock_frame)
 
-            content = (tmp_path / "debug_dump.txt").read_text()
+            content = (tmp_path / "debug_dump.txt").read_text(encoding="utf-8")
             assert "Error getting traceback: frame is gone" in content
 
 
@@ -635,7 +635,7 @@ class TestFindSkillMdNonDirectory:
         from nooa.skill import _find_skill_md
 
         file_path = tmp_path / "not_a_dir.txt"
-        file_path.write_text("content")
+        file_path.write_text("content", encoding="utf-8")
         result = _find_skill_md(file_path)
         assert result is None
 
@@ -725,9 +725,9 @@ class TestSQLiteSessionLocking:
         three-digit pid produced a garbled ``999472`` that would later
         mislead diagnostics.
         """
-        import fcntl
         import socket
 
+        from nooa._filelock import unlock
         from nooa.storage.sqlite import _acquire_session_lock
 
         lock_path = tmp_path / "truncation.lock"
@@ -740,7 +740,7 @@ class TestSQLiteSessionLocking:
             # sharing the directory tell the session is in use).
             assert lock_path.read_bytes() == f"{os.getpid()} {socket.gethostname()}".encode()
         finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            unlock(fd)
             os.close(fd)
 
     def test_close_on_connect_failure(self, tmp_path):

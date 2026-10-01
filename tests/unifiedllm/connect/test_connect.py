@@ -264,7 +264,7 @@ def test_write_preserves_other_aliases(tmp_path):
     proposal = make_plan()
     connect.write(proposal.entry, path, alias="first")
     connect.write(proposal.entry, path, alias="second")
-    assert set(yaml.safe_load(path.read_text())["models"]) == {"first", "second"}
+    assert set(yaml.safe_load(path.read_text(encoding="utf-8"))["models"]) == {"first", "second"}
 
 
 def test_write_replaces_hand_written_alias_preserving_neighbors(tmp_path):
@@ -272,10 +272,11 @@ def test_write_replaces_hand_written_alias_preserving_neighbors(tmp_path):
     path.write_text(
         "# human notes\nmodels:\n  local:\n    model_name: openai/old\n"
         "  other: {model_name: openai/other} # keep this\n"
-        "settings: true # keep this too\n"
+        "settings: true # keep this too\n",
+        encoding="utf-8",
     )
     connect.write({"model_name": "openai/new"}, path, alias="local")
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     assert text.startswith("# human notes\n")
     assert "  other: {model_name: openai/other} # keep this\n" in text
     assert "settings: true # keep this too\n" in text
@@ -339,7 +340,7 @@ def test_connect_uses_existing_registry_discovery(tmp_path, monkeypatch):
     user.mkdir()
     project.mkdir()
     manual = user / "llm_config.yaml"
-    manual.write_text("models: {local: {model_name: openai/manual}}\n")
+    manual.write_text("models: {local: {model_name: openai/manual}}\n", encoding="utf-8")
     connect.write(make_plan().entry, manual, alias="local")
     monkeypatch.setattr(llm_config, "bundled_config_paths", lambda: [])
     monkeypatch.setattr(layered_config, "get_user_dir", lambda name: user / name)
@@ -347,7 +348,7 @@ def test_connect_uses_existing_registry_discovery(tmp_path, monkeypatch):
     monkeypatch.delenv("NEMO_OO_LLM_CONFIG", raising=False)
     assert llm_config.llm_config_chain() == [manual]
     persisted = {k: v for k, v in make_plan().entry.items() if k != "provenance"}
-    assert yaml.safe_load(manual.read_text())["models"]["local"] == persisted
+    assert yaml.safe_load(manual.read_text(encoding="utf-8"))["models"]["local"] == persisted
 
 
 @pytest.mark.parametrize(
@@ -504,7 +505,7 @@ def test_library_source_has_no_ui_or_provider_imports():
 
     imported = []
     for source in Path(connect.__file__).parent.rglob("*.py"):
-        for node in ast.walk(ast.parse(source.read_text())):
+        for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
             if isinstance(node, ast.Import):
                 imported.extend(alias.name for alias in node.names)
             elif isinstance(node, ast.ImportFrom):
@@ -551,9 +552,11 @@ assert proposal.entry['max_tokens'] > 0
 connect.write(proposal.entry, Path(sys.argv[1]), alias='local')
 """
     path = tmp_path / "models.yaml"
-    result = subprocess.run([sys.executable, "-c", code, str(path)], capture_output=True, text=True)
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(path)], capture_output=True, text=True, encoding="utf-8"
+    )
     assert result.returncode == 0, result.stderr
-    assert yaml.safe_load(path.read_text())["models"]["local"]["max_tokens"] > 0
+    assert yaml.safe_load(path.read_text(encoding="utf-8"))["models"]["local"]["max_tokens"] > 0
 
 
 def test_catalogue_efforts_propose_complete_blocks_and_default():
@@ -592,13 +595,13 @@ def test_bad_declarations_fail_before_probe(levels):
 
 def test_comment_only_registry_and_quoted_alias_round_trip(tmp_path):
     path = tmp_path / "models.yaml"
-    path.write_text("# Keep this note\n")
+    path.write_text("# Keep this note\n", encoding="utf-8")
     connect.write({"model_name": "openai/m"}, path, alias="off")
     connect.write({"model_name": "openai/n"}, path, alias="off")
-    assert path.read_text().startswith("# Keep this note\n")
+    assert path.read_text(encoding="utf-8").startswith("# Keep this note\n")
     expected = connect.configure_entry({"model_name": "openai/n"})
     expected.pop("provenance", None)
-    assert yaml.safe_load(path.read_text())["models"] == {"off": expected}
+    assert yaml.safe_load(path.read_text(encoding="utf-8"))["models"] == {"off": expected}
 
 
 @pytest.mark.asyncio

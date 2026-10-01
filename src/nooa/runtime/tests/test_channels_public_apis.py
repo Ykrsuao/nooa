@@ -13,7 +13,8 @@ import asyncio
 
 import pytest
 
-from nooa.runtime.channels import Channel, QueueManager
+from nooa.context_blocks.events import EventBase
+from nooa.runtime.channels import Channel, ChannelItemConsumed, ChannelItemsDiscarded, QueueManager
 from nooa.runtime.event_manager import EventManager
 
 # ---------------------------------------------------------------------------
@@ -159,8 +160,17 @@ def _watched(name: str = "q") -> tuple[QueueManager, Channel[object], list[tuple
     """A queue channel on a real EventManager, and the channel events it publishes."""
     manager = EventManager()
     seen: list[tuple[str, object]] = []
-    manager.on("ChannelItemConsumed", lambda e: seen.append(("consumed", e.item)))
-    manager.on("ChannelItemsDiscarded", lambda e: seen.append(("discarded", e.items)))
+
+    def consumed(event: EventBase) -> None:
+        assert isinstance(event, ChannelItemConsumed)
+        seen.append(("consumed", event.item))
+
+    def discarded(event: EventBase) -> None:
+        assert isinstance(event, ChannelItemsDiscarded)
+        seen.append(("discarded", event.items))
+
+    manager.on("ChannelItemConsumed", consumed)
+    manager.on("ChannelItemsDiscarded", discarded)
     qm = QueueManager(event_manager=manager)
     return qm, qm.queue(name), seen
 

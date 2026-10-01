@@ -15,6 +15,7 @@ Focus on:
 from __future__ import annotations
 
 import json
+import multiprocessing
 from typing import Any
 
 import pytest
@@ -24,6 +25,11 @@ from nooa.config import CodeActConfig
 from nooa.runtime.sandbox.config import SandboxConfig
 from nooa.strategies.codeact import CodeActStrategy
 from nooa.unifiedllm import FakeLLMClient, LLMResponse, ToolCall
+
+pytestmark = pytest.mark.skipif(
+    "fork" not in multiprocessing.get_all_start_methods(),
+    reason="sandbox worker needs the fork start method",
+)
 
 
 def _resp(content: str = "", tool_calls: list | None = None) -> LLMResponse:

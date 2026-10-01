@@ -25,7 +25,6 @@ def _execution(code: str, *, tool_call_id: str = "call_test") -> ExecutionTurn:
         stdout="",
         error=None,
         returned_value=None,
-        status="OK",
         tool_call_id=tool_call_id,
     )
 

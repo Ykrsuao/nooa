@@ -52,6 +52,7 @@ def test_remember_with_schema_fields(agent):
         "deploy with make ship", type="skill", importance="HIGH", tags=["deploy", "ci"]
     )
     m = mgr.store.get(mid)
+    assert m is not None
     assert m.type == MemoryType.SKILL
     assert m.importance == 8.0  # HIGH -> 8.0 (verbal ladder)
     assert "deploy" in m.tags
@@ -77,6 +78,7 @@ def test_update_memory_changes_content_and_is_retrievable(agent):
         mid, content="the staging db is named lighthouse_stg", importance="CRITICAL"
     )
     m = mgr.store.get(mid)
+    assert m is not None
     assert "lighthouse_stg" in m.content and m.importance == 10.0  # CRITICAL -> 10.0
     # re-embedded -> new content retrievable
     hits = agent.recall("staging database name", k=1)
@@ -94,7 +96,9 @@ def test_forget_archives_memory(agent):
     assert mgr.store.count() == 1
     assert agent.forget(mid) is True
     assert mgr.store.count() == 0
-    assert mgr.store.get(mid).archived is True
+    m = mgr.store.get(mid)
+    assert m is not None
+    assert m.archived is True
     assert mgr.stats.pruned == 1
 
 

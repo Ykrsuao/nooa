@@ -3,8 +3,6 @@
 """Tests for BashSession asyncio.Lock loop-mismatch fix (gl-212)."""
 
 import asyncio
-import os
-import signal
 
 import pytest
 
@@ -12,19 +10,11 @@ from nooa.tools._bash_session import BashSession
 
 
 @pytest.fixture
-def bash_session():
+async def bash_session():
     """Create a BashSession for testing."""
     session = BashSession()
     yield session
-    # Best-effort cleanup — kill the subprocess if still alive
-    if session._process is not None and session._process.returncode is None:
-        try:
-            os.killpg(os.getpgid(session._process.pid), signal.SIGKILL)
-        except Exception:
-            try:
-                session._process.kill()
-            except Exception:
-                pass
+    await session.close()
 
 
 class TestLockLoopMismatch:
@@ -82,6 +72,19 @@ class TestLockLoopMismatch:
 
         chunks_b = asyncio.run(stream_on_this_loop(bash_session))
         assert any(name == "__done__" for name, _ in chunks_b)
+
+    def test_concurrent_runs_after_loop_change_restart_bash_once(self, bash_session):
+        """Callers racing on a new loop share one restart instead of each starting bash."""
+
+        async def two_at_once(session):
+            return await asyncio.gather(session.run("echo a"), session.run("echo b"))
+
+        asyncio.run(two_at_once(bash_session))
+        starts = bash_session._start_count
+
+        results = asyncio.run(two_at_once(bash_session))
+        assert [stdout for stdout, _, _ in results] == ["a", "b"]
+        assert bash_session._start_count == starts + 1
 
     @pytest.mark.asyncio
     async def test_ensure_lock_noop_when_same_loop(self, bash_session):

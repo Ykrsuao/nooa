@@ -40,7 +40,7 @@ def mr():
 
 def write_eval(path: Path, rows: Sequence[Row]) -> Path:
     """Write a .noo-eval.jsonl from (model, test, case, tier, passed, error_type)."""
-    with open(path, "w") as fh:
+    with open(path, "w", encoding="utf-8") as fh:
         fh.write(json.dumps({"_type": "metadata", "metadata": {}}) + "\n")
         for model, test, case, tier, passed, error in rows:
             fh.write(
@@ -546,7 +546,7 @@ def test_strict_fast_checks_sync_all_public_ci_dependencies_first(mr, monkeypatc
 def test_strict_arm_uses_explicit_wheel_without_env_or_ambient_extras(mr, tmp_path, monkeypatch):
     tree = tmp_path / "tree"
     tree.mkdir()
-    (tree / "uv.lock").write_text("locked")
+    (tree / "uv.lock").write_text("locked", encoding="utf-8")
     wheel = tmp_path / "nemo_oo_agents_nvidia-0.1.0-py3-none-any.whl"
     wheel.write_bytes(b"wheel")
     output_root = tmp_path / "evidence"
@@ -649,7 +649,7 @@ def test_advisories_do_not_become_hard_gate_failures(mr):
 def test_draft_command_targets_full_sha_and_is_idempotent(mr, tmp_path, monkeypatch, existing):
     sha = "a" * 40
     notes = tmp_path / "notes.md"
-    notes.write_text("safe")
+    notes.write_text("safe", encoding="utf-8")
     commands = []
 
     def fake_run(cmd, **_kwargs):
@@ -677,7 +677,7 @@ def test_draft_command_targets_full_sha_and_is_idempotent(mr, tmp_path, monkeypa
 
 def test_draft_is_rechecked_before_mutation(mr, tmp_path, monkeypatch):
     notes = tmp_path / "notes.md"
-    notes.write_text("safe")
+    notes.write_text("safe", encoding="utf-8")
     commands = []
     monkeypatch.setattr(
         mr,
@@ -808,7 +808,9 @@ def test_unmerged_rehearsal_does_not_require_github_token(mr, tmp_path, monkeypa
     )
 
     assert mr.ci_main(args) == 0
-    manifest = json.loads((tmp_path / "artifacts" / "release-manifest.json").read_text())
+    manifest = json.loads(
+        (tmp_path / "artifacts" / "release-manifest.json").read_text(encoding="utf-8")
+    )
     assert manifest["status"] == "passed"
     assert manifest["unmerged_candidate"] is True
 
@@ -855,7 +857,9 @@ def test_ci_never_creates_draft_after_gate_failure(mr, tmp_path, monkeypatch, fa
     with pytest.raises(mr.ReleaseError):
         mr.ci_main(args)
     assert draft_calls == []
-    manifest = json.loads((tmp_path / "artifacts" / "release-manifest.json").read_text())
+    manifest = json.loads(
+        (tmp_path / "artifacts" / "release-manifest.json").read_text(encoding="utf-8")
+    )
     assert manifest["status"] == "failed"
 
 
@@ -893,7 +897,9 @@ def test_noninteractive_ci_drafts_when_only_advisories_exist(mr, tmp_path, monke
 
     assert mr.ci_main(args) == 0
     assert len(draft_calls) == 1
-    manifest = json.loads((tmp_path / "artifacts" / "release-manifest.json").read_text())
+    manifest = json.loads(
+        (tmp_path / "artifacts" / "release-manifest.json").read_text(encoding="utf-8")
+    )
     assert manifest["status"] == "passed"
     assert manifest["capability"]["hard_gate_outcome"] == "passed"
     assert manifest["capability"]["advisory"]["collapses"] == ["collapse"]
@@ -901,13 +907,13 @@ def test_noninteractive_ci_drafts_when_only_advisories_exist(mr, tmp_path, monke
 
 
 def test_release_runner_contains_no_publish_operation(mr):
-    source = (REPO / "scripts/make_release.py").read_text()
+    source = (REPO / "scripts/make_release.py").read_text(encoding="utf-8")
     assert "--draft=false" not in source
     assert "def publish(" not in source
 
 
 def test_existing_publication_workflow_still_uses_published_release_trigger():
-    workflow = (REPO / ".github/workflows/publish.yml").read_text()
+    workflow = (REPO / ".github/workflows/publish.yml").read_text(encoding="utf-8")
     assert "release:" in workflow
     assert "types: [published]" in workflow
     assert "workflow_dispatch:" in workflow

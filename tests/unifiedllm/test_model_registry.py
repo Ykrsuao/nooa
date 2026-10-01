@@ -50,13 +50,13 @@ def _isolate_registry(tmp_path, monkeypatch):
 
 def _write_project_config(project_dir: Path, body: str) -> Path:
     path = project_dir / "llm_config.yaml"
-    path.write_text(textwrap.dedent(body))
+    path.write_text(textwrap.dedent(body), encoding="utf-8")
     return path
 
 
 def _write_user_config(user_dir: Path, body: str) -> Path:
     path = user_dir / "llm_config.yaml"
-    path.write_text(textwrap.dedent(body))
+    path.write_text(textwrap.dedent(body), encoding="utf-8")
     return path
 
 
@@ -420,7 +420,8 @@ class TestApiKeyHandling:
                   numeric-env:
                     model_name: m
                     api_key_env: 12345
-            """)
+            """),
+            encoding="utf-8",
         )
         reload_registry(path)
 
@@ -527,7 +528,8 @@ class TestConfigLayering:
                 models:
                   removable:
                     model_name: removable
-            """)
+            """),
+            encoding="utf-8",
         )
         project_config = _write_project_config(
             _project_dir(tmp_path),
@@ -568,7 +570,8 @@ class TestConfigLayering:
                 models:
                   who-wins:
                     model_name: from-env
-            """)
+            """),
+            encoding="utf-8",
         )
         monkeypatch.setenv("NEMO_OO_LLM_CONFIG", str(env_config))
 
@@ -582,9 +585,9 @@ class TestConfigLayering:
         a = tmp_path / "a.yaml"
         b = tmp_path / "b.yaml"
         c = tmp_path / "c.yaml"
-        a.write_text("models:\n  k:\n    model_name: from-a\n")
-        b.write_text("models:\n  k:\n    model_name: from-b\n")
-        c.write_text("models:\n  k:\n    model_name: from-c\n")
+        a.write_text("models:\n  k:\n    model_name: from-a\n", encoding="utf-8")
+        b.write_text("models:\n  k:\n    model_name: from-b\n", encoding="utf-8")
+        c.write_text("models:\n  k:\n    model_name: from-c\n", encoding="utf-8")
 
         registry = reload_registry(a, b, c)
         assert registry["k"]["model_name"] == "from-c"

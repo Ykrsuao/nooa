@@ -9,6 +9,7 @@ test_shell_tools_modern.py.
 
 import pytest
 
+from nooa.tools._bash_session import PWD_COMMAND
 from nooa.tools.shell_tools import Match, ShellResult, ShellTools
 
 
@@ -66,8 +67,10 @@ async def test_run_stream_accepts_stdin_verbatim_and_keeps_exit_status(tmp_path,
 
 
 @pytest.fixture
-def sh(tmp_path):
-    return ShellTools(cwd=str(tmp_path))
+async def sh(tmp_path):
+    shell = ShellTools(cwd=str(tmp_path))
+    yield shell
+    await shell.close()
 
 
 @pytest.mark.asyncio
@@ -95,8 +98,8 @@ def test_match_requires_resolved_path():
         Match("example.py", 1, 1, "value\n")  # type: ignore[call-arg]
 
 
-def test_shell_result_timeout_flag_preserves_positional_matches_argument():
-    match = Match("example.py", 1, 1, "value\n", resolved_path="/tmp/example.py")
+def test_shell_result_timeout_flag_preserves_positional_matches_argument(tmp_path):
+    match = Match("example.py", 1, 1, "value\n", resolved_path=tmp_path / "example.py")
     result = ShellResult("value", "", 0, [match], timed_out=True)
 
     assert result.matches == [match]
@@ -106,7 +109,7 @@ def test_shell_result_timeout_flag_preserves_positional_matches_argument():
 @pytest.mark.asyncio
 async def test_write_file_then_read(sh, tmp_path):
     await sh.write_file("f.txt", "line1\nline2\nline3\n")
-    assert (tmp_path / "f.txt").read_text() == "line1\nline2\nline3\n"
+    assert (tmp_path / "f.txt").read_text(encoding="utf-8") == "line1\nline2\nline3\n"
     # read with a numbered gutter (default) -> Match; inspect via .numbered/.text.
     view = await sh.read("f.txt")
     assert "line2" in view.numbered
@@ -120,7 +123,7 @@ async def test_write_file_then_read(sh, tmp_path):
 async def test_replace_path_unique(sh, tmp_path):
     await sh.write_file("f.py", "x = 1\ny = 2\nz = 3\n")
     await sh.replace("f.py", "y = 2", "y = 22")
-    assert (tmp_path / "f.py").read_text() == "x = 1\ny = 22\nz = 3\n"
+    assert (tmp_path / "f.py").read_text(encoding="utf-8") == "x = 1\ny = 22\nz = 3\n"
 
 
 @pytest.mark.asyncio
@@ -141,7 +144,7 @@ async def test_replace_match_rejects_old_new_without_modifying_file(
     """Both whole-file and sliced matches reject the path-form argument pattern."""
     original = "def calc(a, b):\n    return a * b\n"
     path = tmp_path / "calc.py"
-    path.write_text(original)
+    path.write_bytes(original.encode())
     match = await sh.read("calc.py", lines)
     with pytest.raises(ValueError) as error:
         if keyword:
@@ -167,7 +170,7 @@ async def test_replace_match_argument_guard_runs_before_file_access(sh, tmp_path
 async def test_write_file_is_overwrite(sh, tmp_path):
     await sh.write_file("f.txt", "old")
     await sh.write_file("f.txt", "new")
-    assert (tmp_path / "f.txt").read_text() == "new"
+    assert (tmp_path / "f.txt").read_text(encoding="utf-8") == "new"
 
 
 @pytest.mark.asyncio
@@ -186,7 +189,7 @@ async def test_file_operations_allow_paths_outside_cwd(sh, tmp_path):
     )
     # The region reaches EOF in a file that ended with a newline, so the
     # replacement is re-terminated rather than stripping the final byte.
-    assert (sibling / "relative.txt").read_text() == "changed\nreplaced\n"
+    assert (sibling / "relative.txt").read_text(encoding="utf-8") == "changed\nreplaced\n"
 
     await sh.write_file(str(absolute), "absolute")
     assert (await sh.read(str(absolute))).text == "absolute"
@@ -195,10 +198,10 @@ async def test_file_operations_allow_paths_outside_cwd(sh, tmp_path):
 @pytest.mark.asyncio
 async def test_match_from_read_stays_bound_after_cwd_change(sh, tmp_path):
     original = tmp_path / "original.txt"
-    original.write_text("before\n")
+    original.write_text("before\n", encoding="utf-8")
     other = tmp_path / "other"
     other.mkdir()
-    (other / "original.txt").write_text("wrong file\n")
+    (other / "original.txt").write_text("wrong file\n", encoding="utf-8")
 
     match = await sh.read("original.txt")
     sliced = match[1:1]
@@ -207,8 +210,8 @@ async def test_match_from_read_stays_bound_after_cwd_change(sh, tmp_path):
 
     # Whole-file region at EOF in a newline-terminated file keeps its final
     # newline instead of silently stripping it.
-    assert original.read_text() == "after\n"
-    assert (other / "original.txt").read_text() == "wrong file\n"
+    assert original.read_text(encoding="utf-8") == "after\n"
+    assert (other / "original.txt").read_text(encoding="utf-8") == "wrong file\n"
 
 
 @pytest.mark.asyncio
@@ -246,7 +249,7 @@ def test_match_rejects_a_relative_resolved_path(tmp_path, monkeypatch):
 def test_match_keeps_an_absolute_resolved_path(tmp_path):
     """The supported form is unaffected."""
     target = tmp_path / "f.txt"
-    target.write_text("hello\n")
+    target.write_text("hello\n", encoding="utf-8")
     match = Match("f.txt", 1, 1, "hello\n", resolved_path=target)
     assert match.resolved_path == str(target.resolve())
 
@@ -257,7 +260,7 @@ async def test_replace_match_at_eof_keeps_trailing_newline(sh, tmp_path):
     await sh.write_file("f.py", "a = 1\nb = 2\n")
     match = await sh.read("f.py", (2, 2))
     await sh.replace(match, "b = 20")  # no trailing newline in the replacement
-    assert (tmp_path / "f.py").read_text() == "a = 1\nb = 20\n"
+    assert (tmp_path / "f.py").read_text(encoding="utf-8") == "a = 1\nb = 20\n"
 
 
 @pytest.mark.asyncio
@@ -266,7 +269,7 @@ async def test_replace_match_at_eof_preserves_missing_newline(sh, tmp_path):
     await sh.write_file("f.py", "a = 1\nb = 2")  # no trailing newline
     match = await sh.read("f.py", (2, 2))
     await sh.replace(match, "b = 20")
-    assert (tmp_path / "f.py").read_text() == "a = 1\nb = 20"
+    assert (tmp_path / "f.py").read_text(encoding="utf-8") == "a = 1\nb = 20"
 
 
 @pytest.mark.parametrize("absolute", [False, True])
@@ -275,14 +278,14 @@ async def test_run_with_cwd_runs_there_and_leaves_the_shell_directory(sh, tmp_pa
     home = sh.cwd
     target = str((tmp_path / "sub").resolve()) if absolute else "sub"
     try:
-        r = await sh.run("pwd", cwd=target)
+        r = await sh.run(PWD_COMMAND, cwd=target)
         assert r.success
-        assert r.stdout == str((tmp_path / "sub").resolve())
+        assert r.stdout == (tmp_path / "sub").resolve().as_posix()
         # A cd inside the scoped command does not move the shell either.
-        r = await sh.run("cd deeper && pwd", cwd=target)
+        r = await sh.run(f"cd deeper && {PWD_COMMAND}", cwd=target)
         assert r.stdout.endswith("deeper")
         assert sh.cwd == home
-        assert (await sh.run("pwd")).stdout == str(home)
+        assert (await sh.run(PWD_COMMAND)).stdout == home.as_posix()
     finally:
         await sh.close()
 
@@ -294,7 +297,7 @@ async def test_run_with_a_missing_cwd_fails_without_running_the_command(sh, tmp_
         assert "missing" in r.stderr
         assert "ran" not in r.stdout
         assert not (tmp_path / "marker").exists()
-        assert (await sh.run("pwd")).stdout == str(sh.cwd)
+        assert (await sh.run(PWD_COMMAND)).stdout == sh.cwd.as_posix()
     finally:
         await sh.close()
 
@@ -316,7 +319,7 @@ async def test_run_with_cwd_returns_the_command_status(sh, tmp_path):
         assert r.returncode == 1
         r = await sh.run("exit_code() { return 7; }; exit_code", cwd="sub")
         assert r.returncode == 7
-        assert (await sh.run("pwd")).stdout == str(sh.cwd)
+        assert (await sh.run(PWD_COMMAND)).stdout == sh.cwd.as_posix()
     finally:
         await sh.close()
 
@@ -326,9 +329,9 @@ async def test_run_with_a_relative_cwd_ignores_cdpath(sh, tmp_path):
     (tmp_path / "sub").mkdir()
     (tmp_path / "elsewhere" / "sub").mkdir(parents=True)
     try:
-        await sh.run(f"export CDPATH={tmp_path / 'elsewhere'}")
-        r = await sh.run("pwd", cwd="sub")
-        assert r.stdout == str((tmp_path / "sub").resolve())
+        await sh.run(f"export CDPATH='{(tmp_path / 'elsewhere').as_posix()}'")
+        r = await sh.run(PWD_COMMAND, cwd="sub")
+        assert r.stdout == (tmp_path / "sub").resolve().as_posix()
     finally:
         await sh.close()
 
@@ -350,8 +353,8 @@ async def test_run_with_stdin_and_cwd_returns_to_the_shell_directory(sh, tmp_pat
     (tmp_path / "sub").mkdir()
     try:
         home = sh.cwd
-        r = await sh.run("cat; pwd", stdin="line\n", cwd="sub")
-        assert r.stdout == f"line\n{(tmp_path / 'sub').resolve()}"
+        r = await sh.run(f"cat; {PWD_COMMAND}", stdin="line\n", cwd="sub")
+        assert r.stdout == f"line\n{(tmp_path / 'sub').resolve().as_posix()}"
         assert sh.cwd == home
         assert (await sh.run("false", stdin="x\n")).returncode == 1
         # The session keeps reading its own commands after the redirection ends.
@@ -363,9 +366,9 @@ async def test_run_with_stdin_and_cwd_returns_to_the_shell_directory(sh, tmp_pat
 async def test_run_stream_with_cwd_runs_there(sh, tmp_path):
     (tmp_path / "sub").mkdir()
     try:
-        events = [event async for event in sh.run_stream("pwd", cwd="sub")]
+        events = [event async for event in sh.run_stream(PWD_COMMAND, cwd="sub")]
         out = "".join(event.text for event in events if event.kind == "stdout")
-        assert out.strip() == str((tmp_path / "sub").resolve())
+        assert out.strip() == (tmp_path / "sub").resolve().as_posix()
         assert events[-1].returncode == 0
     finally:
         await sh.close()
@@ -378,3 +381,22 @@ def test_run_documents_cwd_for_the_model():
     assert "cwd: str | Path | None = None" in rendered
     assert "cwd: Directory for this command only" in rendered
     assert "run(command, stdin=, timeout=, cwd=)" in doc(ShellTools)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ending", ["\n", "\r\n"], ids=["lf", "crlf"])
+async def test_edits_keep_the_file_line_endings(sh, tmp_path, ending):
+    """Both replace forms write back the file's own line ending, on every platform."""
+    path = tmp_path / "f.py"
+    path.write_bytes("a = 1\nb = 2\nc = 3\n".replace("\n", ending).encode())
+    await sh.replace("f.py", "a = 1\nb = 2", "a = 10\nb = 20")
+    match = await sh.read("f.py", (3, 3))
+    await sh.replace(match, "c = 30\n")
+    assert path.read_bytes() == "a = 10\nb = 20\nc = 30\n".replace("\n", ending).encode()
+
+
+@pytest.mark.asyncio
+async def test_write_file_writes_content_verbatim(sh, tmp_path):
+    """Text mode would turn each LF into CRLF on Windows."""
+    await sh.write_file("f.txt", "one\ntwo\r\nthree\n")
+    assert (tmp_path / "f.txt").read_bytes() == b"one\ntwo\r\nthree\n"

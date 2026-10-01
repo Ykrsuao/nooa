@@ -16,9 +16,10 @@ def test_tombstones_do_not_reappear_in_editor_or_credential_suggestions(tmp_path
 
     low, high = tmp_path / "low.yaml", tmp_path / "high.yaml"
     low.write_text(
-        "models: {ghost: {model_name: openai/model, api_base: 'https://api.test/v1', api_key_env: TEST_KEY}}\n"
+        "models: {ghost: {model_name: openai/model, api_base: 'https://api.test/v1', api_key_env: TEST_KEY}}\n",
+        encoding="utf-8",
     )
-    high.write_text("models: {ghost: null}\n")
+    high.write_text("models: {ghost: null}\n", encoding="utf-8")
     monkeypatch.setattr(llm_config, "llm_config_chain", lambda: [low, high])
     assert "ghost" not in _connect_registry.entries()
     assert (
@@ -29,7 +30,10 @@ def test_tombstones_do_not_reappear_in_editor_or_credential_suggestions(tmp_path
 def test_discovery_replay_accepts_its_own_v1_fallback(tmp_path):
     path = tmp_path / "discovery.json"
     models = [{"id": "model"}]
-    path.write_text(json.dumps({"data": {"api_base": "https://api.test/v1", "models": models}}))
+    path.write_text(
+        json.dumps({"data": {"api_base": "https://api.test/v1", "models": models}}),
+        encoding="utf-8",
+    )
     assert _connect_stages.read_discovery(path, "https://api.test") == models
     with pytest.raises(ValueError, match="different endpoint"):
         _connect_stages.read_discovery(path, "https://other.test")
@@ -40,7 +44,7 @@ def test_stage_save_refuses_literal_credentials_without_echo(tmp_path, nested):
     source, target = tmp_path / "input.json", tmp_path / "registry.yaml"
     credential = {"api_key": "literal-private-test"}
     entry = {"model_name": "openai/model", **({"extra_body": credential} if nested else credential)}
-    source.write_text(json.dumps({"alias": "model", "entry": entry}))
+    source.write_text(json.dumps({"alias": "model", "entry": entry}), encoding="utf-8")
     result = CliRunner().invoke(
         command, ["--stage", "save", "--input", str(source), "--output", str(target)]
     )
@@ -51,20 +55,22 @@ def test_stage_save_refuses_literal_credentials_without_echo(tmp_path, nested):
 
 def test_stage_save_can_populate_null_models(tmp_path):
     source, target = tmp_path / "input.json", tmp_path / "registry.yaml"
-    target.write_text("models:\n")
-    source.write_text(json.dumps({"alias": "model", "entry": {"model_name": "openai/model"}}))
+    target.write_text("models:\n", encoding="utf-8")
+    source.write_text(
+        json.dumps({"alias": "model", "entry": {"model_name": "openai/model"}}), encoding="utf-8"
+    )
     result = CliRunner().invoke(
         command, ["--stage", "save", "--input", str(source), "--output", str(target)]
     )
     assert result.exit_code == 0, result.output
-    assert "model" in yaml.safe_load(target.read_text())["models"]
+    assert "model" in yaml.safe_load(target.read_text(encoding="utf-8"))["models"]
 
 
 def test_editor_can_add_a_level_supplied_by_levels_file(tmp_path, monkeypatch):
     from nooa_cli.commands._connect_wizard import WizardState, configure_checks
 
     levels = tmp_path / "levels.yaml"
-    levels.write_text("ultra: {reasoning_effort: high}\n")
+    levels.write_text("ultra: {reasoning_effort: high}\n", encoding="utf-8")
     state = WizardState(
         editing={"model_name": "openai/model", "api_key_env": "", "max_tokens": 8192},
         candidate={"id": "model", "reasoning": {"supported_efforts": ["ultra"]}},

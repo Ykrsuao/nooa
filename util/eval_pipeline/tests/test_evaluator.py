@@ -72,7 +72,7 @@ class TestEvaluatorCreation:
         )
         assert "gpt-4" in evaluator.models
         assert evaluator.models["gpt-4"] is client
-        assert evaluator.output_dir == Path("experiments")
+        assert evaluator.output_dir == Path("experiments").resolve()
         assert evaluator.name == "test_eval"
 
     def test_create_with_multiple_models(self):
@@ -93,7 +93,8 @@ class TestEvaluatorFromConfig:
     def test_from_config_loads_models(self, tmp_path):
         """from_config creates evaluator with models from YAML."""
         config_file = tmp_path / "config.yaml"
-        config_file.write_text("""
+        config_file.write_text(
+            """
 name: test_eval
 models:
   test-model:
@@ -107,7 +108,9 @@ agent_models:
 
 output_dir: results
 test_suite: []
-""")
+""",
+            encoding="utf-8",
+        )
         # This will fail trying to create client without proper env vars,
         # but we're testing the config loading path
         # In real usage, the environment variable would be set
@@ -630,7 +633,7 @@ class TestAgentOverrideFilePath:
             for name in class_names
         )
         p = tmp_path / "agent_tmp.py"
-        p.write_text(body)
+        p.write_text(body, encoding="utf-8")
         return p
 
     def test_file_path_with_explicit_class(self, tmp_path):
@@ -903,7 +906,7 @@ class TestEvaluatorPythonApiRun:
 
         from eval_pipeline.eval_types import EvalMetadataLine
 
-        first_line = results.output_file.read_text().splitlines()[0]
+        first_line = results.output_file.read_text(encoding="utf-8").splitlines()[0]
         metadata_line = EvalMetadataLine.model_validate(json.loads(first_line))
         models = metadata_line.metadata.models
         assert models, "metadata must record the model used"

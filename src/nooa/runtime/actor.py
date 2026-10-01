@@ -1366,12 +1366,14 @@ class ActorRuntime:
                 exec_globals, effective_restrictions.blocked_modules
             )
 
-            # 3. Strip redundant imports (from typing import Literal, etc.)
-            from nooa.runtime.code_validator import strip_redundant_imports
+            # 3. Only the in-process namespace is known here. A sandbox may
+            # stage fewer modules, so host names cannot make its imports redundant.
+            if sandbox_executor is None:
+                from nooa.runtime.code_validator import strip_redundant_imports
 
-            code, stripped_imports = strip_redundant_imports(code, set(exec_globals.keys()))
-            for stmt in stripped_imports:
-                hm.import_stripped(stmt)
+                code, stripped_imports = strip_redundant_imports(code, set(exec_globals.keys()))
+                for stmt in stripped_imports:
+                    hm.import_stripped(stmt)
 
             # Validate code if requested (unified validator handles all checks)
             with get_harness_metrics().timer("time_code_validation"):

@@ -8,6 +8,10 @@ Public surface:
 * :class:`~nooa.runtime.sandbox.executor.SandboxedExecutor` — the parent-side
   process backend that runs cells in a locked-down worker.
 * guard errors (:class:`CellTimeoutError`, :class:`CellMemoryError`, ...).
+
+The separate ``nooa.runtime.sandbox.windows`` module declares the staged Windows
+policy/session interface. Its launch gate remains closed; it is not selected
+by the public CodeAct sandbox backend.
 """
 
 from __future__ import annotations

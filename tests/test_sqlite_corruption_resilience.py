@@ -240,6 +240,12 @@ class TestVirtiofsDetection:
     def test_returns_false_on_timeout(self, mock_run):
         assert _is_virtiofs("/some/path/test.db") is False
 
+    @patch("platform.system", return_value="Windows")
+    @patch("subprocess.run", side_effect=AssertionError("no probe subprocess on Windows"))
+    def test_windows_skips_the_probe(self, mock_run, mock_system):
+        assert _is_virtiofs(r"C:\project\test.db") is False
+        mock_run.assert_not_called()
+
     def test_synchronous_full_on_virtiofs(self, tmp_db):
         """Storage manager sets DELETE + synchronous=FULL when virtiofs detected."""
         with patch("nooa.storage.sqlite._is_virtiofs", return_value=True):

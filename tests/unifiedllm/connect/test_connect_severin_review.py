@@ -48,7 +48,7 @@ def test_empty_include_sequences_are_explicit_opt_outs(include):
 
 def test_failed_fsync_cleans_staging_file(tmp_path, monkeypatch):
     path = tmp_path / "registry.yaml"
-    path.write_text("models: {}\n")
+    path.write_text("models: {}\n", encoding="utf-8")
 
     def fail(fd):
         raise OSError("test disk full")
@@ -57,7 +57,7 @@ def test_failed_fsync_cleans_staging_file(tmp_path, monkeypatch):
     with pytest.raises(OSError):
         connect.write({"model_name": "openai/model"}, path, alias="model")
     assert not list(tmp_path.glob("registry.yaml.*"))
-    assert path.read_text() == "models: {}\n"
+    assert path.read_text(encoding="utf-8") == "models: {}\n"
 
 
 @pytest.mark.parametrize(
@@ -69,10 +69,10 @@ def test_failed_fsync_cleans_staging_file(tmp_path, monkeypatch):
 )
 def test_anchors_are_refused_with_actionable_error_without_changing_file(tmp_path, source):
     path = tmp_path / "registry.yaml"
-    path.write_text(source)
+    path.write_text(source, encoding="utf-8")
     with pytest.raises(ValueError, match="anchors|merge keys"):
         connect.write({"model_name": "openai/replacement"}, path, alias="model")
-    assert path.read_text() == source
+    assert path.read_text(encoding="utf-8") == source
 
 
 async def test_422_is_rejected_not_unchecked(monkeypatch):
@@ -86,9 +86,9 @@ def test_null_secrets_env_is_populated(tmp_path):
     from nooa.secrets import write_secret_env
 
     path = tmp_path / "secrets.yaml"
-    path.write_text("env:\n")
+    path.write_text("env:\n", encoding="utf-8")
     write_secret_env(path, "TEST_KEY", "test-only")
-    assert yaml.safe_load(path.read_text())["env"] == {"TEST_KEY": "test-only"}
+    assert yaml.safe_load(path.read_text(encoding="utf-8"))["env"] == {"TEST_KEY": "test-only"}
 
 
 def _write_from_process(path, alias, first_inside, release_first, second_started, second_inside):
@@ -137,7 +137,7 @@ def test_concurrent_registry_writers_serialize_the_entire_update(tmp_path):
                 child.terminate()
                 child.join(5)
     assert first.exitcode == second.exitcode == 0
-    assert set(yaml.safe_load(path.read_text())["models"]) == {"first", "second"}
+    assert set(yaml.safe_load(path.read_text(encoding="utf-8"))["models"]) == {"first", "second"}
 
 
 async def test_unobserved_unauthenticated_request_is_not_called_dropped_settings(monkeypatch):

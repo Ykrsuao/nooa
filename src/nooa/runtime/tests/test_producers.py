@@ -5,11 +5,17 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 
 import pytest
 
 from nooa.runtime.channels import QueueManager, StreamEnd
 from nooa.runtime.producers import after, cron, monitor, run_job, tail
+
+
+def _py(code: str) -> str:
+    """Run Python through either sh or cmd.exe; code must not contain double quotes."""
+    return f'"{sys.executable}" -u -c "{code}"'
 
 
 class FakeEventManager:
@@ -84,13 +90,13 @@ async def test_cron_with_spawn_and_cancel():
 @pytest.mark.asyncio
 async def test_tail_yields_new_lines(tmp_path):
     f = tmp_path / "test.log"
-    f.write_text("existing\n")
+    f.write_text("existing\n", encoding="utf-8")
 
     gen = tail(str(f), poll_interval=0.01)
 
     async def append_later():
         await asyncio.sleep(0.05)
-        with open(str(f), "a") as fh:
+        with open(str(f), "a", encoding="utf-8") as fh:
             fh.write("line1\n")
             fh.write("line2\n")
 
@@ -141,7 +147,7 @@ async def test_run_job_with_spawn():
 
 @pytest.mark.asyncio
 async def test_monitor_streams_stdout_lines():
-    gen = monitor('echo "hello" && echo "world"')
+    gen = monitor(_py("print('hello'); print('world')"))
     lines = []
     async for line in gen:
         lines.append(line)
@@ -155,7 +161,7 @@ async def test_monitor_with_spawn_and_buffer():
     ch = qm.queue("ci")
 
     h = qm.spawn(
-        monitor('for i in 1 2 3; do echo "step $i"; done'),
+        monitor(_py("[print('step', i) for i in range(1, 4)]")),
         channel="ci",
         buffer=10,
     )
@@ -177,7 +183,7 @@ async def test_monitor_cancel_kills_subprocess():
     ch = qm.queue("long")
 
     h = qm.spawn(
-        monitor("while true; do echo tick; sleep 0.01; done"),
+        monitor(_py("import time; print('tick'); time.sleep(60)")),
         channel="long",
         buffer=5,
     )

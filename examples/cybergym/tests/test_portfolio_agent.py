@@ -157,7 +157,7 @@ def test_submit_stores_hypothesis_in_submission_and_jsonl(tmp_path):
     submission = manager.get_submission(result.submission_number)
     assert submission is not None
     assert submission.hypothesis == hypothesis
-    record = json.loads(manager.SUBMISSION_LOG_PATH.read_text().strip())
+    record = json.loads(manager.SUBMISSION_LOG_PATH.read_text(encoding="utf-8").strip())
     assert record["hypothesis"] == hypothesis
 
 
@@ -322,7 +322,7 @@ def test_configure_tracing_installs_atif_with_nooa_api(tmp_path, monkeypatch):
         flush_traces()
         journal_path = trace_dir / "test-session.nooa.jsonl"
         assert journal_path.is_file()
-        journal_text = journal_path.read_text()
+        journal_text = journal_path.read_text(encoding="utf-8")
         bodies = [json.loads(line) for line in journal_text.splitlines()]
         assert any("nooaJournal" in body for body in bodies)
         assert any("resourceSpans" in body for body in bodies)

@@ -37,7 +37,8 @@ models:
     top_p: 0.9
 
 test_suite: []
-"""
+""",
+            encoding="utf-8",
         )
         cfg = load_config(config_file)
         assert cfg.models["m"].temperature == 0.7
@@ -62,7 +63,8 @@ agent_models:
   - m
 
 test_suite: []
-"""
+""",
+            encoding="utf-8",
         )
         evaluator = evaluator_from_config(config_file)
         client = evaluator._model_factories["m"]()
@@ -87,7 +89,8 @@ agent_models:
   - m
 
 test_suite: []
-"""
+""",
+            encoding="utf-8",
         )
         evaluator = evaluator_from_config(config_file)
         client = evaluator._model_factories["m"]()

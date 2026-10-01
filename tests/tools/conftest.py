@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Session-start check for shell-tool test prerequisites.
+"""Collection-time setup and prerequisite check for shell-tool tests.
 
 `test_shell_tools_modern.py` skipif-drops 145 tests when `rg` or `grep` is
 missing from `PATH`. A skip is indistinguishable from a pass in the pytest
@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 
 import pytest
 
@@ -23,12 +24,26 @@ def _missing_prereqs() -> list[str]:
 def _prereq_message(missing: list[str]) -> str:
     return (
         f"tests/tools/ prerequisite missing on PATH: {', '.join(missing)}. "
-        "Install ripgrep (`apt install ripgrep` / `brew install ripgrep`); "
+        "Install ripgrep (`apt install ripgrep` / `brew install ripgrep` / "
+        "`winget install BurntSushi.ripgrep.MSVC`) and Git for Windows on Windows; "
         "see tests/README.md."
     )
 
 
-def pytest_sessionstart(session: pytest.Session) -> None:
+def pytest_configure(config: pytest.Config) -> None:
+    # This historic hook also runs when full-suite collection discovers this
+    # nested conftest after pytest_sessionstart has already happened.
+    if sys.platform == "win32":
+        from nooa.tools import _win_bash
+
+        try:
+            bash = _win_bash.find_bash()
+        except FileNotFoundError as exc:
+            pytest.exit(str(exc), returncode=1)
+        # Match the tool environment even when pytest starts in PowerShell,
+        # where Git's grep/coreutils are normally absent from PATH.
+        os.environ["PATH"] = _win_bash.bash_env(bash, os.environ.copy())["PATH"]
+
     # CI must fail loud rather than silently skip 145 tests. Locally, the
     # header hook below surfaces a banner but the run continues — a
     # contributor running `pytest tests/agents/` should not be forced to

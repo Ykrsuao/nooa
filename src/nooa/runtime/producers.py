@@ -17,6 +17,7 @@ Usage::
 import asyncio
 import os
 import signal
+import sys
 
 
 async def after(delay: float) -> None:
@@ -43,7 +44,7 @@ async def tail(path: str, *, poll_interval: float = 0.5):
     Starts from the current end of file. Polls every
     *poll_interval* seconds.
     """
-    fh = open(path)
+    fh = open(path, encoding="utf-8")
     try:
         fh.seek(0, 2)
         while True:
@@ -75,7 +76,8 @@ async def monitor(cmd: str):
     for process-group isolation so multiple concurrent monitors
     (and the agent itself) don't contend for ptys or interfere
     with each other.  On cancellation the entire process group
-    is killed to prevent orphaned children.
+    is killed to prevent orphaned children; Windows has no process
+    groups, so there the process tree is killed instead.
     """
     proc = await asyncio.create_subprocess_shell(
         cmd,
@@ -86,15 +88,38 @@ async def monitor(cmd: str):
     assert proc.stdout is not None
     try:
         async for line in proc.stdout:
-            yield line.decode("utf-8", errors="replace").rstrip("\n")
+            yield line.decode("utf-8", errors="replace").rstrip("\r\n")
         await proc.wait()
     finally:
         if proc.returncode is None:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except (ProcessLookupError, OSError):
-                try:
-                    proc.kill()
-                except ProcessLookupError:
-                    pass
+            await _kill_process_tree(proc)
             await proc.wait()
+
+
+async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
+    """Kill the shell *proc* and every process it started."""
+    if sys.platform == "win32":
+        # start_new_session is a no-op on Windows; taskkill /T walks the child tree.
+        try:
+            killer = await asyncio.create_subprocess_exec(
+                "taskkill",
+                "/F",
+                "/T",
+                "/PID",
+                str(proc.pid),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await killer.wait()
+        except OSError:
+            pass
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+            return
+        except (ProcessLookupError, OSError):
+            pass
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        pass

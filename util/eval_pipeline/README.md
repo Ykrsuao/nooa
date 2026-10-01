@@ -341,6 +341,27 @@ Each run gets a unique `run_id` (1, 2, 3). Results can be analyzed for:
 
 ---
 
+## Worker Memory Limits
+
+The subprocess engine accepts a per-worker `memory_limit_mb` (CLI:
+`--memory-limit`, in MiB). Capped workers run one task, return their result,
+and exit; they are not reused by the pool.
+
+The monitor samples resident memory every two seconds, captures diagnostics
+at 85% of the configured limit, and terminates an over-limit worker with
+exit code 137 after attempting to return a `MemoryError` result. Windows
+reads the current process working set through the native memory API.
+Linux reads current RSS from `/proc`; the macOS fallback reports peak RSS.
+
+On Windows this is polling-based enforcement, not an OS memory ceiling,
+a committed-memory limit, or process-tree isolation. Spikes between samples
+and child-process memory are not covered. `set_hard_limit()` returns `False`
+on Windows because `RLIMIT_AS` is unavailable; Linux retains its additional
+virtual-address-space safety net. These evaluation-worker limits do not
+enable the public Windows sandbox backend.
+
+---
+
 ## Architecture
 
 ```text

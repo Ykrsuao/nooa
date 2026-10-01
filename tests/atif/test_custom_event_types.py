@@ -204,7 +204,7 @@ class TestCustomEventDispatch:
         exporter._dispatch_event(_CustomMetadataEvent(note="should be skipped"))
 
         # Schema validation.
-        loaded = Trajectory.model_validate_json(exporter.path.read_text())
+        loaded = Trajectory.model_validate_json(exporter.path.read_text(encoding="utf-8"))
         # Normative rules (N1 step_id sequencing, N7 message presence, etc.).
         assert_atif_normative(loaded)
         # System + Task + 3 custom events (metadata filtered) = 5 steps.
@@ -270,7 +270,7 @@ class TestWildcardSubscription:
             agent.event_manager.add(_CustomUserEvent(payload="hello from user code"))
             await agent.run()
 
-        loaded = Trajectory.model_validate_json(out.read_text())
+        loaded = Trajectory.model_validate_json(out.read_text(encoding="utf-8"))
         assert_atif_normative(loaded)
 
         # Find the custom step.

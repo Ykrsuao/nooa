@@ -45,7 +45,8 @@ def test_current_tree_sitter_extracts_symbols_and_references(tmp_path: Path):
         "}\n"
         "new Example().target();\n"
         'const text = "target() is not a reference";\n'
-        "// target() is not a reference\n"
+        "// target() is not a reference\n",
+        encoding="utf-8",
     )
 
     symbols = backend.ts_extract_symbols(source, "javascript")
@@ -77,7 +78,7 @@ def test_typescript_definition_query_compiles_with_installed_grammar(tmp_path: P
         pytest.skip("TypeScript Tree-sitter grammar is not installed")
 
     source = tmp_path / "sample.ts"
-    source.write_text("class Example {}\n")
+    source.write_text("class Example {}\n", encoding="utf-8")
 
     symbols = backend.ts_extract_symbols(source, "typescript")
 

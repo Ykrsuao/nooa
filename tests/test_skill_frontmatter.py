@@ -12,18 +12,22 @@ from nooa.skill import _find_skill_md, _parse_frontmatter, _read_skill_propertie
 
 
 def test_find_skill_md_uppercase(tmp_path):
-    (tmp_path / "SKILL.md").write_text("---\nname: foo\ndescription: bar\n---\nbody")
+    (tmp_path / "SKILL.md").write_text(
+        "---\nname: foo\ndescription: bar\n---\nbody", encoding="utf-8"
+    )
     assert _find_skill_md(tmp_path) == tmp_path / "SKILL.md"
 
 
 def test_find_skill_md_lowercase_fallback(tmp_path):
-    (tmp_path / "skill.md").write_text("---\nname: foo\ndescription: bar\n---\nbody")
+    (tmp_path / "skill.md").write_text(
+        "---\nname: foo\ndescription: bar\n---\nbody", encoding="utf-8"
+    )
     assert _find_skill_md(tmp_path) == tmp_path / "skill.md"
 
 
 def test_find_skill_md_prefers_uppercase(tmp_path):
-    (tmp_path / "SKILL.md").write_text("upper")
-    (tmp_path / "skill.md").write_text("lower")
+    (tmp_path / "SKILL.md").write_text("upper", encoding="utf-8")
+    (tmp_path / "skill.md").write_text("lower", encoding="utf-8")
     assert _find_skill_md(tmp_path) == tmp_path / "SKILL.md"
 
 
@@ -86,7 +90,9 @@ def test_parse_frontmatter_metadata_values_are_strings():
 
 
 def test_read_skill_properties_basic(tmp_path):
-    (tmp_path / "SKILL.md").write_text("---\nname: my-skill\ndescription: Does things\n---\nbody")
+    (tmp_path / "SKILL.md").write_text(
+        "---\nname: my-skill\ndescription: Does things\n---\nbody", encoding="utf-8"
+    )
     props = _read_skill_properties(tmp_path)
     assert props.name == "my-skill"
     assert props.description == "Does things"
@@ -98,13 +104,13 @@ def test_read_skill_properties_missing_file(tmp_path):
 
 
 def test_read_skill_properties_missing_name(tmp_path):
-    (tmp_path / "SKILL.md").write_text("---\ndescription: foo\n---\nbody")
+    (tmp_path / "SKILL.md").write_text("---\ndescription: foo\n---\nbody", encoding="utf-8")
     with pytest.raises(ValueError, match="name"):
         _read_skill_properties(tmp_path)
 
 
 def test_read_skill_properties_missing_description(tmp_path):
-    (tmp_path / "SKILL.md").write_text("---\nname: foo\n---\nbody")
+    (tmp_path / "SKILL.md").write_text("---\nname: foo\n---\nbody", encoding="utf-8")
     with pytest.raises(ValueError, match="description"):
         _read_skill_properties(tmp_path)
 

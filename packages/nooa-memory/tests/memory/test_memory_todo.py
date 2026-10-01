@@ -11,7 +11,7 @@ from nooa_memory import (
 )
 from nooa_memory.config import EmbeddingConfig, SpontaneousConfig
 from nooa_memory.descriptors import to_status
-from nooa_memory.schema import Memory, _now
+from nooa_memory.schema import AccessRecord, Memory, _now
 
 from nooa import Agent
 from nooa.events import Task
@@ -63,6 +63,7 @@ def test_remember_todo_via_tool(agent):
     mgr = _install(agent)
     mid = agent.remember("ship the migration guide", type="todo", importance="HIGH")
     got = mgr.store.get(mid)
+    assert got is not None
     assert got.type is MemoryType.TODO
     assert got.status == "open"
 
@@ -71,7 +72,9 @@ def test_update_memory_closes_todo(agent):
     mgr = _install(agent)
     mid = agent.remember("ship the migration guide", type="todo")
     assert agent.update_memory(mid, status="DONE") is True
-    assert mgr.store.get(mid).status == "done"
+    got = mgr.store.get(mid)
+    assert got is not None
+    assert got.status == "done"
 
 
 def test_update_status_on_non_todo_raises(agent):
@@ -85,9 +88,13 @@ def test_type_switch_opens_and_clears_status(agent):
     mgr = _install(agent)
     info = agent.remember("could become a commitment", type="info")
     agent.update_memory(info, type="todo")
-    assert mgr.store.get(info).status == "open"
+    got = mgr.store.get(info)
+    assert got is not None
+    assert got.status == "open"
     agent.update_memory(info, type="info")
-    assert mgr.store.get(info).status is None
+    got = mgr.store.get(info)
+    assert got is not None
+    assert got.status is None
 
 
 # --------------------------------------------------------------------------
@@ -204,7 +211,7 @@ def test_open_todo_is_never_pruned(agent):
         importance=2.0,
         created_at=old,
         last_accessed_at=old,
-        access_log=[old],
+        access_log=[AccessRecord(ts=old, channel="created")],
     )
     assert mgr.forgetting.is_protected(m) is True
     assert mgr.forgetting.should_prune(m) is False
@@ -220,7 +227,7 @@ def test_done_todo_decays_normally(agent):
         importance=2.0,
         created_at=old,
         last_accessed_at=old,
-        access_log=[old],
+        access_log=[AccessRecord(ts=old, channel="created")],
     )
     assert mgr.forgetting.is_protected(m) is False
     assert mgr.forgetting.should_prune(m) is True

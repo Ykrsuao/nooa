@@ -15,6 +15,7 @@ teardown is in flight.
 from __future__ import annotations
 
 import asyncio
+import multiprocessing
 import time
 
 import pytest
@@ -23,6 +24,12 @@ from nooa import Agent
 from nooa.runtime.sandbox.config import SandboxConfig
 from nooa.runtime.sandbox.executor import SandboxedExecutor
 from nooa.unifiedllm import FakeLLMClient
+
+# The executor refuses to construct without fork, even though these tests never start a worker.
+pytestmark = pytest.mark.skipif(
+    "fork" not in multiprocessing.get_all_start_methods(),
+    reason="SandboxedExecutor needs the fork start method",
+)
 
 
 class _Agent(Agent, llm=FakeLLMClient()):

@@ -7,7 +7,6 @@ Provides persistent storage using stdlib sqlite3 — no new dependencies.
 
 from __future__ import annotations
 
-import fcntl
 import json
 import logging
 import os
@@ -25,6 +24,7 @@ from typing import TYPE_CHECKING, Literal, Self
 
 from pydantic import ValidationError as PydanticValidationError
 
+from nooa._filelock import lock_exclusive, unlock
 from nooa.context_blocks import Event, EventBase, EventStatus, Metadata
 from nooa.context_blocks.events import _EVENT_REGISTRY
 from nooa.events import (
@@ -143,7 +143,12 @@ def _is_virtiofs(db_path: str) -> bool:
 
     import platform
 
-    if platform.system() == "Linux":
+    system = platform.system()
+    if system == "Windows":
+        # virtiofs is a Linux guest filesystem; there is no `mount` to parse.
+        return False
+
+    if system == "Linux":
         try:
             result = subprocess.run(
                 ["df", "-T", "--", db_path],
@@ -680,13 +685,13 @@ def _acquire_session_lock(lock_path: str) -> int:
     with ``read_lock_owner``). We truncate before writing so a shorter
     record can't leave trailing bytes from a longer predecessor.
 
-    The caller releases the lock with ``fcntl.flock(fd, fcntl.LOCK_UN)``
+    The caller releases the lock with ``nooa._filelock.unlock(fd)``
     and ``os.close(fd)``. Taking the lock only to test whether a session is
     free still rewrites the record with this process's pid and host.
     """
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_BINARY", 0), 0o644)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_exclusive(fd, blocking=False)
     except OSError:
         os.close(fd)
         owner_pid = _read_lock_pid(lock_path)
@@ -744,7 +749,7 @@ def delete_sqlite_database(db_path: str | Path) -> bool:
         # Blank the record before releasing, as a clean close does, so the
         # retained lock file does not name this process as a live owner.
         _blank_lock_if_ours(lock_path)
-        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        unlock(lock_fd)
         os.close(lock_fd)
 
 
@@ -952,8 +957,10 @@ class SQLiteStorageManager:
     def get_latest_snapshot_id(self) -> str | None:
         """Return the snapshot_id of the most recently saved snapshot, or None."""
         with self._db_lock:
+            # rowid breaks created_at ties: Windows clocks tick every ~15.6ms,
+            # so back-to-back saves can share a timestamp.
             row = self._conn.execute(
-                "SELECT snapshot_id FROM snapshots ORDER BY created_at DESC LIMIT 1"
+                "SELECT snapshot_id FROM snapshots ORDER BY created_at DESC, rowid DESC LIMIT 1"
             ).fetchone()
             return row[0] if row is not None else None
 
@@ -997,7 +1004,7 @@ class SQLiteStorageManager:
                 # the kernel lock reads "free" and not a stale owner.
                 if self._db_path != ":memory:":
                     _blank_lock_if_ours(str(Path(self._db_path).with_suffix(".lock")))
-                fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
+                unlock(self._lock_fd)
                 os.close(self._lock_fd)
                 self._lock_fd = None
 

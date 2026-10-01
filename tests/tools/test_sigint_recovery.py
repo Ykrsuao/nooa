@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-from nooa.tools._bash_session import BashSession
+from nooa.tools._bash_session import PWD_COMMAND, BashSession
 
 
 @pytest.fixture
@@ -30,15 +30,15 @@ class TestTimeoutRecovery:
         subdir = tmp_path / "mydir"
         subdir.mkdir()
 
-        await session.run(f"cd {subdir}")
+        await session.run(f"cd {subdir.as_posix()}")
         assert session.cwd == subdir
 
         # This will timeout and reset
         await session.run("sleep 30", timeout=2)
 
         # cwd should still be the subdir (preserved across reset)
-        out, _, _ = await session.run("pwd")
-        assert str(subdir) in out, f"cwd lost after timeout. Got: {out!r}"
+        out, _, _ = await session.run(PWD_COMMAND)
+        assert subdir.as_posix() in out, f"cwd lost after timeout. Got: {out!r}"
 
     async def test_timeout_returns_partial_output(self, session):
         """Output produced before timeout should be captured."""

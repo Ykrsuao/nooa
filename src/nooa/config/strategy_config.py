@@ -35,7 +35,7 @@ class CodeActConfig(BaseModel):
 
     # ``arbitrary_types_allowed`` lets us put a ``Prefill`` protocol instance
     # in the config (Pydantic doesn't validate protocols natively).
-    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True, extra="forbid")
 
     max_iterations: int | None = None
     max_retries: int = 3

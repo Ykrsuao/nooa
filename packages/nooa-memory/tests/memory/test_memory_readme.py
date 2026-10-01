@@ -13,7 +13,7 @@ _MARKDOWN_LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 
 def test_readme_does_not_cite_missing_memory_bench():
     """Issue #104: examples/memory_bench/ is not in the public repository."""
-    text = _README.read_text()
+    text = _README.read_text(encoding="utf-8")
     assert "memory_bench" not in text, (
         "README cites examples/memory_bench/, which is not in this repository. "
         "Point at examples/quickstart/12_memory.py instead."
@@ -22,7 +22,7 @@ def test_readme_does_not_cite_missing_memory_bench():
 
 def test_readme_relative_markdown_links_resolve():
     """Every relative markdown link from the README must exist on disk."""
-    text = _README.read_text()
+    text = _README.read_text(encoding="utf-8")
     missing: list[str] = []
     for href in _MARKDOWN_LINK.findall(text):
         target = href.split("#", 1)[0].strip()

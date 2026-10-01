@@ -42,6 +42,7 @@ def test_protocol_subprocess_imports_this_checkout(tmp_path):
         env=default_environment(),
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=True,
     )
     assert [Path(path).resolve() for path in json.loads(result.stdout)] == [
@@ -71,7 +72,8 @@ def _write_protocol_skill(workspace: Path) -> None:
     (package / "pyproject.toml").write_text(
         '[project]\nname = "protocol-skill"\n\n'
         '[project.entry-points."nooa.skills"]\n'
-        '"test.protocol" = "protocol_skill:ProtocolSkill"\n'
+        '"test.protocol" = "protocol_skill:ProtocolSkill"\n',
+        encoding="utf-8",
     )
     (package / "__init__.py").write_text(
         "from nooa.skill import Skill, slash_command\n\n"
@@ -81,12 +83,13 @@ def _write_protocol_skill(workspace: Path) -> None:
         "    )\n"
         "    def check(self, args: str) -> str:\n"
         '        """Check ACP command dispatch."""\n'
-        "        return f'Check {args}.'\n"
+        "        return f'Check {args}.'\n",
+        encoding="utf-8",
     )
     config_dir = workspace / ".nooa"
     config_dir.mkdir()
     (config_dir / "settings.yaml").write_text(
-        f"coding:\n  additional_skills_dirs:\n    - {skills_root}\n"
+        f"coding:\n  additional_skills_dirs:\n    - {skills_root}\n", encoding="utf-8"
     )
 
 
@@ -128,13 +131,18 @@ async def test_acp_subprocess_transcript(tmp_path, monkeypatch):
         for index, message in enumerate(incoming)
         if message.get("id") == 1 and "result" in message
     )
-    commands_notification = next(
-        index
-        for index, message in enumerate(incoming)
-        if message.get("method") == "session/update"
-        and message.get("params", {}).get("update", {}).get("sessionUpdate")
-        == "available_commands_update"
-    )
+    commands_notification = None
+    for index, message in enumerate(incoming):
+        if message.get("method") != "session/update":
+            continue
+        params = message.get("params")
+        assert isinstance(params, dict)
+        update = params.get("update")
+        assert isinstance(update, dict)
+        if update.get("sessionUpdate") == "available_commands_update":
+            commands_notification = index
+            break
+    assert commands_notification is not None
     assert new_session_response < commands_notification
     commands = next(
         update for _, update in client.updates if isinstance(update, AvailableCommandsUpdate)
@@ -259,6 +267,7 @@ async def test_acp_subprocess_closes_a_session_over_the_wire(tmp_path):
                 timeout=_HANG_TIMEOUT,
             )
 
+    assert initialized.agent_capabilities is not None
     capabilities = initialized.agent_capabilities.session_capabilities
     assert capabilities is not None and capabilities.close is not None
 

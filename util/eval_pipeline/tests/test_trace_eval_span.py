@@ -14,7 +14,7 @@ from tests.otlp_helpers import _otlp_attrs_to_dict
 
 def _read_first_span_from_otlp_file(trace_file: Path) -> tuple[str, dict]:
     """Parse first OTLP TracesData line and return (span_name, flat_attributes)."""
-    line = trace_file.read_text().strip()
+    line = trace_file.read_text(encoding="utf-8").strip()
     assert line, "Trace file is empty"
     payload = json.loads(line)
     res = payload["resourceSpans"][0]
@@ -66,7 +66,7 @@ class TestWriteEvalSpanToTrace:
     def test_writes_span_with_eval_attributes(self, tmp_path: Path):
         """Eval span has correct name and attributes (OTLP format)."""
         trace_file = tmp_path / "test.jsonl"
-        trace_file.write_text("")  # Create empty trace file
+        trace_file.write_text("", encoding="utf-8")  # Create empty trace file
 
         write_eval_span_to_trace(
             trace_file=trace_file,
@@ -90,7 +90,7 @@ class TestWriteEvalSpanToTrace:
             },
         )
 
-        content = trace_file.read_text()
+        content = trace_file.read_text(encoding="utf-8")
         lines = [ln for ln in content.strip().split("\n") if ln]
         assert len(lines) == 1, f"Expected 1 line, got {len(lines)}"
 
@@ -113,7 +113,7 @@ class TestWriteEvalSpanToTrace:
     def test_handles_missing_reasoning(self, tmp_path: Path):
         """Scorer without reasoning still creates attributes."""
         trace_file = tmp_path / "test.jsonl"
-        trace_file.write_text("")
+        trace_file.write_text("", encoding="utf-8")
 
         write_eval_span_to_trace(
             trace_file=trace_file,
@@ -166,7 +166,7 @@ class TestWriteEvalSpanToTrace:
     def test_includes_duration_when_provided(self, tmp_path: Path):
         """Duration is included in span when provided."""
         trace_file = tmp_path / "test.jsonl"
-        trace_file.write_text("")
+        trace_file.write_text("", encoding="utf-8")
 
         write_eval_span_to_trace(
             trace_file=trace_file,
@@ -186,7 +186,7 @@ class TestWriteEvalSpanToTrace:
     def test_rejects_negative_duration(self, tmp_path: Path):
         """Negative duration raises ValueError."""
         trace_file = tmp_path / "test.jsonl"
-        trace_file.write_text("")
+        trace_file.write_text("", encoding="utf-8")
 
         with pytest.raises(ValueError, match="duration_ns must be non-negative"):
             write_eval_span_to_trace(

@@ -739,7 +739,7 @@ class TestLibraryManagerFailures:
         # Create a valid-looking library directory
         lib_dir = tmp_path / "libs" / "my_lib"
         lib_dir.mkdir(parents=True)
-        (lib_dir / "pyproject.toml").write_text("[project]\nname = 'my_lib'\n")
+        (lib_dir / "pyproject.toml").write_text("[project]\nname = 'my_lib'\n", encoding="utf-8")
 
         # Import will fail (no proper package structure)
         # This tests that the exception is swallowed
@@ -1299,10 +1299,10 @@ class TestLibraryManagerScanSkipInvalidDir:
         # Create a directory WITHOUT pyproject.toml (should be skipped)
         not_a_lib = libs_dir / "not_a_lib"
         not_a_lib.mkdir()
-        (not_a_lib / "some_file.txt").write_text("not a library")
+        (not_a_lib / "some_file.txt").write_text("not a library", encoding="utf-8")
 
         # Also create a file (not directory)
-        (libs_dir / "just_a_file.txt").write_text("ignored")
+        (libs_dir / "just_a_file.txt").write_text("ignored", encoding="utf-8")
 
         manager = LibraryManager(agent, libs_dir)
         manager._scan()  # Should not raise; skips non-library entries
@@ -2233,7 +2233,7 @@ class TestSkillWritingLintAndDeps:
         lw = self._make_lw(tmp_path)
         (tmp_path / "mylib").mkdir()
         (tmp_path / "mylib" / "pyproject.toml").write_text(
-            '[tool.poetry]\nname = "mylib"\nversion = "0.1.0"'
+            '[tool.poetry]\nname = "mylib"\nversion = "0.1.0"', encoding="utf-8"
         )
         result = lw._get_declared_deps("mylib")
         assert result == set()

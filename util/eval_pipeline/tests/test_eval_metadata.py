@@ -32,7 +32,7 @@ def _read_eval_span_attrs(trace_file: Path) -> dict:
     """Read the eval span from a trace file and return flat attributes dict."""
     from tests.otlp_helpers import _otlp_attrs_to_dict
 
-    for line in trace_file.read_text().strip().splitlines():
+    for line in trace_file.read_text(encoding="utf-8").strip().splitlines():
         payload = json.loads(line)
         for rs in payload.get("resourceSpans", []):
             for ss in rs.get("scopeSpans", []):
@@ -161,7 +161,7 @@ class TestSpanAttributes:
     def test_write_eval_span_with_metadata(self, tmp_path: Path):
         """Extra metadata appears as eval.* attributes in the trace file."""
         trace_file = tmp_path / "test.jsonl"
-        trace_file.write_text("")
+        trace_file.write_text("", encoding="utf-8")
 
         write_eval_span_to_trace(
             trace_file=trace_file,
@@ -184,7 +184,7 @@ class TestSpanAttributes:
     def test_write_eval_span_without_metadata(self, tmp_path: Path):
         """No extra eval.* keys when metadata is None."""
         trace_file = tmp_path / "test.jsonl"
-        trace_file.write_text("")
+        trace_file.write_text("", encoding="utf-8")
 
         write_eval_span_to_trace(
             trace_file=trace_file,
@@ -219,7 +219,7 @@ class TestSpanAttributes:
     def test_reserved_keys_raise_valueerror(self, tmp_path: Path):
         """Metadata keys that collide with built-in eval.* keys raise ValueError."""
         trace_file = tmp_path / "test.jsonl"
-        trace_file.write_text("")
+        trace_file.write_text("", encoding="utf-8")
 
         with pytest.raises(ValueError, match="collide with built-in"):
             write_eval_span_to_trace(
@@ -302,9 +302,10 @@ class TestConfigLoading:
         """Config-level and test-level eval_metadata are parsed."""
         config_yaml = tmp_path / "config.yaml"
         data_file = tmp_path / "data.jsonl"
-        data_file.write_text('{"args":[], "kwargs":{"x":1}, "expected":1}\n')
+        data_file.write_text('{"args":[], "kwargs":{"x":1}, "expected":1}\n', encoding="utf-8")
 
-        config_yaml.write_text(f"""\
+        config_yaml.write_text(
+            f"""\
 name: test
 output_dir: {tmp_path / "out"}
 eval_metadata:
@@ -328,7 +329,9 @@ test_suite:
     scorers:
       - name: exact
         class: ExactMatchScorer
-""")
+""",
+            encoding="utf-8",
+        )
 
         from eval_pipeline.config import load_config
 
@@ -340,9 +343,10 @@ test_suite:
         """Config without eval_metadata defaults to None."""
         config_yaml = tmp_path / "config.yaml"
         data_file = tmp_path / "data.jsonl"
-        data_file.write_text('{"args":[], "kwargs":{"x":1}, "expected":1}\n')
+        data_file.write_text('{"args":[], "kwargs":{"x":1}, "expected":1}\n', encoding="utf-8")
 
-        config_yaml.write_text(f"""\
+        config_yaml.write_text(
+            f"""\
 name: test
 output_dir: {tmp_path / "out"}
 models:
@@ -361,7 +365,9 @@ test_suite:
     scorers:
       - name: exact
         class: ExactMatchScorer
-""")
+""",
+            encoding="utf-8",
+        )
 
         from eval_pipeline.config import load_config
 
@@ -374,7 +380,8 @@ test_suite:
         data_file = tmp_path / "data.jsonl"
         data_file.write_text(
             '{"args":[], "kwargs":{"x":1}, "expected":1, "metadata":{"difficulty":"hard"}}\n'
-            '{"args":[], "kwargs":{"x":2}, "expected":2}\n'
+            '{"args":[], "kwargs":{"x":2}, "expected":2}\n',
+            encoding="utf-8",
         )
 
         from eval_pipeline.config import load_tasks

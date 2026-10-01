@@ -54,15 +54,18 @@ class TestDiscoverSkillsDirs:
         (lib_dir / "pyproject.toml").write_text(
             '[project]\nname = "workflow-lib"\n\n'
             '[project.entry-points."nooa.skills"]\n'
-            '"nvzurich.workflow" = "workflow_lib:WorkflowSkill"\n'
+            '"nvzurich.workflow" = "workflow_lib:WorkflowSkill"\n',
+            encoding="utf-8",
         )
         (lib_dir / "__init__.py").write_text(
-            "from nooa.skill import Skill\n\nclass WorkflowSkill(Skill):\n    pass\n"
+            "from nooa.skill import Skill\n\nclass WorkflowSkill(Skill):\n    pass\n",
+            encoding="utf-8",
         )
         text_dir = tmp_path / "root-cause"
         text_dir.mkdir()
         (text_dir / "SKILL.md").write_text(
-            "---\nname: root-cause\ndescription: Diagnose a defect\n---\nFind the cause.\n"
+            "---\nname: root-cause\ndescription: Diagnose a defect\n---\nFind the cause.\n",
+            encoding="utf-8",
         )
 
         registry.discover_skills_dirs([tmp_path])
@@ -80,7 +83,8 @@ class TestDiscoverSkillsDirs:
             class MyTool(Skill):
                 \"\"\"A custom tool.\"\"\"
                 pass
-        """)
+        """),
+            encoding="utf-8",
         )
         registry.discover_skills_dirs([tmp_path])
         assert "ext.my_tool" in registry.loaded()
@@ -95,8 +99,9 @@ class TestDiscoverSkillsDirs:
             "from nooa.skill import Skill\n\n"
             "class ResourceSkill(Skill):\n"
             "    def detach(self):\n"
-            f"        Path({str(marker)!r}).write_text('yes')\n"
-            "        super().detach()\n"
+            f"        Path({str(marker)!r}).write_text('yes', encoding='utf-8')\n"
+            "        super().detach()\n",
+            encoding="utf-8",
         )
         value = SkillRegistry(_FakeAgent())
         value.discover_skills_dirs([tmp_path])
@@ -105,7 +110,7 @@ class TestDiscoverSkillsDirs:
         assert module_name in sys.modules
         await value.aclose()
 
-        assert marker.read_text() == "yes"
+        assert marker.read_text(encoding="utf-8") == "yes"
         assert module_name not in sys.modules
 
     @pytest.mark.asyncio
@@ -115,7 +120,8 @@ class TestDiscoverSkillsDirs:
     ):
         skill_file = tmp_path / "isolated.py"
         skill_file.write_text(
-            "from nooa.skill import Skill\n\nclass IsolatedSkill(Skill):\n    value = 'live'\n"
+            "from nooa.skill import Skill\n\nclass IsolatedSkill(Skill):\n    value = 'live'\n",
+            encoding="utf-8",
         )
         registries = [SkillRegistry(_FakeAgent()), SkillRegistry(_FakeAgent())]
         for value in registries:
@@ -139,7 +145,8 @@ class TestDiscoverSkillsDirs:
             textwrap.dedent("""
             from nooa.skill import Skill
             class Priv(Skill): pass
-        """)
+        """),
+            encoding="utf-8",
         )
         registry.discover_skills_dirs([tmp_path])
         assert "ext._private" not in registry.loaded()
@@ -149,7 +156,7 @@ class TestDiscoverSkillsDirs:
         skill_dir = tmp_path / "my-cmd"
         skill_dir.mkdir()
         (skill_dir / "SKILL.md").write_text(
-            "---\nname: my-cmd\ndescription: A test command\n---\nDo the thing.\n"
+            "---\nname: my-cmd\ndescription: A test command\n---\nDo the thing.\n", encoding="utf-8"
         )
         registry.discover_skills_dirs([tmp_path])
         assert "cmd.my-cmd" in registry.loaded()
@@ -162,7 +169,7 @@ class TestDiscoverSkillsDirs:
     def test_broken_python_file_skipped(self, registry, tmp_path):
         """A .py file that fails to import is skipped with warning."""
         skill_file = tmp_path / "broken.py"
-        skill_file.write_text("raise RuntimeError('boom')")
+        skill_file.write_text("raise RuntimeError('boom')", encoding="utf-8")
         registry.discover_skills_dirs([tmp_path])
         assert "ext.broken" not in registry.loaded()
 
@@ -181,12 +188,14 @@ class TestDiscoverLibs:
             (lib_dir / "pyproject.toml").write_text(
                 '[project]\nname = "workflow-distribution"\n\n'
                 '[project.entry-points."nooa.skills"]\n'
-                '"test.workflow" = "shared_workflow:WorkflowSkill"\n'
+                '"test.workflow" = "shared_workflow:WorkflowSkill"\n',
+                encoding="utf-8",
             )
             (package / "__init__.py").write_text(
                 "from nooa.skill import Skill\n\n"
                 "class WorkflowSkill(Skill):\n"
-                f"    value = {value!r}\n"
+                f"    value = {value!r}\n",
+                encoding="utf-8",
             )
             return root
 
@@ -212,10 +221,12 @@ class TestDiscoverLibs:
         (lib_dir / "pyproject.toml").write_text(
             '[project]\nname = "workflow"\n\n'
             '[project.entry-points."nooa.skills"]\n'
-            '"test.workflow" = "reference_workflow:WorkflowSkill"\n'
+            '"test.workflow" = "reference_workflow:WorkflowSkill"\n',
+            encoding="utf-8",
         )
         (package / "__init__.py").write_text(
-            "from nooa.skill import Skill\n\nclass WorkflowSkill(Skill):\n    value = 'shared'\n"
+            "from nooa.skill import Skill\n\nclass WorkflowSkill(Skill):\n    value = 'shared'\n",
+            encoding="utf-8",
         )
         first = SkillRegistry(_FakeAgent())
         second = SkillRegistry(_FakeAgent())
@@ -238,10 +249,12 @@ class TestDiscoverLibs:
         (lib_dir / "pyproject.toml").write_text(
             '[project]\nname = "shared-reload"\n\n'
             '[project.entry-points."nooa.skills"]\n'
-            '"test.shared" = "shared_reload_workflow:SharedSkill"\n'
+            '"test.shared" = "shared_reload_workflow:SharedSkill"\n',
+            encoding="utf-8",
         )
         (package / "__init__.py").write_text(
-            "from nooa.skill import Skill\nclass SharedSkill(Skill):\n    value = 'old'\n"
+            "from nooa.skill import Skill\nclass SharedSkill(Skill):\n    value = 'old'\n",
+            encoding="utf-8",
         )
         first = SkillRegistry(_FakeAgent())
         second = SkillRegistry(_FakeAgent())
@@ -254,7 +267,8 @@ class TestDiscoverLibs:
             module = package / "__init__.py"
             module.write_text(
                 "from nooa.skill import Skill\n"
-                "class SharedSkill(Skill):\n    value = 'new-version'\n"
+                "class SharedSkill(Skill):\n    value = 'new-version'\n",
+                encoding="utf-8",
             )
             stat = module.stat()
             import os
@@ -279,10 +293,12 @@ class TestDiscoverLibs:
         (lib_dir / "pyproject.toml").write_text(
             '[project]\nname = "direct-workflow"\n\n'
             '[project.entry-points."nooa.skills"]\n'
-            '"test.direct" = "direct_workflow:DirectSkill"\n'
+            '"test.direct" = "direct_workflow:DirectSkill"\n',
+            encoding="utf-8",
         )
         (lib_dir / "direct_workflow.py").write_text(
-            "from nooa.skill import Skill\nclass DirectSkill(Skill):\n    value = 'direct'\n"
+            "from nooa.skill import Skill\nclass DirectSkill(Skill):\n    value = 'direct'\n",
+            encoding="utf-8",
         )
 
         registry.discover_libs(tmp_path)
@@ -295,11 +311,13 @@ class TestDiscoverLibs:
         (lib_dir / "pyproject.toml").write_text(
             '[project]\nname = "worktrees"\n\n'
             '[project.entry-points."nooa.skills"]\n'
-            '"test.worktrees" = "worktrees.worktrees:Worktrees"\n'
+            '"test.worktrees" = "worktrees.worktrees:Worktrees"\n',
+            encoding="utf-8",
         )
-        (lib_dir / "__init__.py").write_text("")
+        (lib_dir / "__init__.py").write_text("", encoding="utf-8")
         (lib_dir / "worktrees.py").write_text(
-            "from nooa.skill import Skill\nclass Worktrees(Skill):\n    value = 'package'\n"
+            "from nooa.skill import Skill\nclass Worktrees(Skill):\n    value = 'package'\n",
+            encoding="utf-8",
         )
 
         registry.discover_libs(tmp_path)
@@ -315,11 +333,13 @@ class TestDiscoverLibs:
         (lib_dir / "pyproject.toml").write_text(
             '[project]\nname = "workflow-distribution"\n\n'
             '[project.entry-points."nooa.skills"]\n'
-            '"nvzurich.workflow" = "actual_workflow.commands:WorkflowSkill"\n'
+            '"nvzurich.workflow" = "actual_workflow.commands:WorkflowSkill"\n',
+            encoding="utf-8",
         )
-        (package.parent / "__init__.py").write_text("")
+        (package.parent / "__init__.py").write_text("", encoding="utf-8")
         (package / "__init__.py").write_text(
-            "from nooa.skill import Skill\n\nclass WorkflowSkill(Skill):\n    pass\n"
+            "from nooa.skill import Skill\n\nclass WorkflowSkill(Skill):\n    pass\n",
+            encoding="utf-8",
         )
 
         registry.discover_libs(tmp_path)
@@ -335,10 +355,12 @@ class TestDiscoverLibs:
         (lib_dir / "pyproject.toml").write_text(
             '[project]\nname = "my-lib"\n\n'
             '[project.entry-points."nooa.skills"]\n'
-            '"local.my_lib" = "my_lib:MyLibSkill"\n'
+            '"local.my_lib" = "my_lib:MyLibSkill"\n',
+            encoding="utf-8",
         )
         (lib_dir / "__init__.py").write_text(
-            'from nooa.skill import Skill\n\nclass MyLibSkill(Skill):\n    """A library skill."""\n'
+            'from nooa.skill import Skill\n\nclass MyLibSkill(Skill):\n    """A library skill."""\n',
+            encoding="utf-8",
         )
         registry.discover_libs(tmp_path)
         assert "local.my_lib" in registry.loaded()
@@ -347,7 +369,7 @@ class TestDiscoverLibs:
         """Directories without pyproject.toml are skipped."""
         lib_dir = tmp_path / "no_pyproject"
         lib_dir.mkdir()
-        (lib_dir / "__init__.py").write_text("x = 1")
+        (lib_dir / "__init__.py").write_text("x = 1", encoding="utf-8")
         registry.discover_libs(tmp_path)
         assert registry.loaded() == []
 
@@ -364,13 +386,15 @@ class TestDiscoverLibs:
             textwrap.dedent("""
             [project]
             name = "dup-lib"
-        """)
+        """),
+            encoding="utf-8",
         )
         (lib_dir / "__init__.py").write_text(
             textwrap.dedent("""
             from nooa.skill import Skill
             class DupSkill(Skill): pass
-        """)
+        """),
+            encoding="utf-8",
         )
         # Pre-register to simulate already loaded
         registry.register("local.dup_lib", FakeSkill())
@@ -458,13 +482,17 @@ class TestReload:
         skill_dir = tmp_path / "demo"
         skill_dir.mkdir()
         skill_md = skill_dir / "SKILL.md"
-        skill_md.write_text("---\nname: demo\ndescription: old description\n---\nold body\n")
+        skill_md.write_text(
+            "---\nname: demo\ndescription: old description\n---\nold body\n", encoding="utf-8"
+        )
         first = SkillRegistry(_FakeAgent())
         second = SkillRegistry(_FakeAgent())
         first.discover_skills_dirs([tmp_path])
         second.discover_skills_dirs([tmp_path])
         try:
-            skill_md.write_text("---\nname: demo\ndescription: new description\n---\nnew body\n")
+            skill_md.write_text(
+                "---\nname: demo\ndescription: new description\n---\nnew body\n", encoding="utf-8"
+            )
 
             assert await first.reload("cmd.demo") == "Reloaded cmd.demo (self.demo)"
             assert first["cmd.demo"].description == "new description"
@@ -483,7 +511,8 @@ class TestReload:
 
         skill_file = tmp_path / "demo.py"
         skill_file.write_text(
-            "from nooa.skill import Skill\nclass Demo(Skill):\n    value = 'old'\n"
+            "from nooa.skill import Skill\nclass Demo(Skill):\n    value = 'old'\n",
+            encoding="utf-8",
         )
         first = SkillRegistry(_FakeAgent())
         second = SkillRegistry(_FakeAgent())
@@ -493,7 +522,8 @@ class TestReload:
         second_module = type(second["ext.demo"]).__module__
         try:
             skill_file.write_text(
-                "from nooa.skill import Skill\nclass Demo(Skill):\n    value = 'new'\n"
+                "from nooa.skill import Skill\nclass Demo(Skill):\n    value = 'new'\n",
+                encoding="utf-8",
             )
             stat = skill_file.stat()
             os.utime(skill_file, (stat.st_atime + 2, stat.st_mtime + 2))
@@ -520,17 +550,20 @@ class TestReload:
         (lib_dir / "pyproject.toml").write_text(
             '[project]\nname = "nested-reload"\n\n'
             '[project.entry-points."nooa.skills"]\n'
-            '"test.nested" = "nested_reload_workflow.commands:NestedSkill"\n'
+            '"test.nested" = "nested_reload_workflow.commands:NestedSkill"\n',
+            encoding="utf-8",
         )
-        (package / "__init__.py").write_text("")
+        (package / "__init__.py").write_text("", encoding="utf-8")
         commands = package / "commands.py"
         commands.write_text(
-            "from nooa.skill import Skill\nclass NestedSkill(Skill):\n    value = 'old'\n"
+            "from nooa.skill import Skill\nclass NestedSkill(Skill):\n    value = 'old'\n",
+            encoding="utf-8",
         )
         registry.discover_libs(tmp_path)
         assert registry["test.nested"].value == "old"
         commands.write_text(
-            "from nooa.skill import Skill\nclass NestedSkill(Skill):\n    value = 'new-version'\n"
+            "from nooa.skill import Skill\nclass NestedSkill(Skill):\n    value = 'new-version'\n",
+            encoding="utf-8",
         )
         stat = commands.stat()
         commands.touch()
@@ -606,7 +639,8 @@ class TestReload:
         (lib_dir / "pyproject.toml").write_text(
             '[project]\nname = "lazy-reload"\n\n'
             '[project.entry-points."nooa.skills"]\n'
-            '"test.lazy" = "lazy_reload_workflow:LazySkill"\n'
+            '"test.lazy" = "lazy_reload_workflow:LazySkill"\n',
+            encoding="utf-8",
         )
         init = package / "__init__.py"
         init.write_text(
@@ -614,12 +648,13 @@ class TestReload:
             "class LazySkill(Skill):\n"
             "    def value(self):\n"
             "        from lazy_reload_workflow.helper import VALUE\n"
-            "        return VALUE\n"
+            "        return VALUE\n",
+            encoding="utf-8",
         )
-        (package / "helper.py").write_text("VALUE = 'still-works'\n")
+        (package / "helper.py").write_text("VALUE = 'still-works'\n", encoding="utf-8")
         registry.discover_libs(tmp_path)
         old_skill = registry["test.lazy"]
-        init.write_text("this is invalid Python !!!\n")
+        init.write_text("this is invalid Python !!!\n", encoding="utf-8")
 
         result = await registry.reload("test.lazy")
 
@@ -638,7 +673,8 @@ class TestReload:
         (lib_dir / "pyproject.toml").write_text(
             '[project]\nname = "swap-reload"\n\n'
             '[project.entry-points."nooa.skills"]\n'
-            '"test.swap" = "swap_reload_workflow:SwapSkill"\n'
+            '"test.swap" = "swap_reload_workflow:SwapSkill"\n',
+            encoding="utf-8",
         )
         init = package / "__init__.py"
         init.write_text(
@@ -646,16 +682,17 @@ class TestReload:
             "class SwapSkill(Skill):\n"
             "    def value(self):\n"
             "        from swap_reload_workflow.helper import VALUE\n"
-            "        return VALUE\n"
+            "        return VALUE\n",
+            encoding="utf-8",
         )
         helper = package / "helper.py"
-        helper.write_text("VALUE = 'old-code'\n")
+        helper.write_text("VALUE = 'old-code'\n", encoding="utf-8")
         registry.discover_libs(tmp_path)
         old_skill = registry["test.swap"]
         assert old_skill.value() == "old-code"
         old_package = sys.modules["swap_reload_workflow"]
         old_helper = sys.modules["swap_reload_workflow.helper"]
-        helper.write_text("VALUE = 'replacement-code'\n")
+        helper.write_text("VALUE = 'replacement-code'\n", encoding="utf-8")
         if constructor == "runtime-error":
             failed_constructor = (
                 "    def __init__(self):\n        raise RuntimeError('new constructor failed')\n"
@@ -665,7 +702,8 @@ class TestReload:
                 "    def __init__(self, required):\n        self.required = required\n"
             )
         init.write_text(
-            "from nooa.skill import Skill\n\nclass SwapSkill(Skill):\n" + failed_constructor
+            "from nooa.skill import Skill\n\nclass SwapSkill(Skill):\n" + failed_constructor,
+            encoding="utf-8",
         )
 
         result = await registry.reload("test.swap")
@@ -680,7 +718,8 @@ class TestReload:
             "from nooa.skill import Skill\n\n"
             "class SwapSkill(Skill):\n"
             "    def value(self):\n"
-            "        return 'recovered'\n"
+            "        return 'recovered'\n",
+            encoding="utf-8",
         )
         stat = init.stat()
         import os
@@ -699,11 +738,13 @@ class TestReload:
         (lib_dir / "pyproject.toml").write_text(
             '[project]\nname = "attach-reload"\n\n'
             '[project.entry-points."nooa.skills"]\n'
-            '"test.attach" = "attach_reload_workflow:AttachSkill"\n'
+            '"test.attach" = "attach_reload_workflow:AttachSkill"\n',
+            encoding="utf-8",
         )
         init = package / "__init__.py"
         init.write_text(
-            "from nooa.skill import Skill\nclass AttachSkill(Skill):\n    value = 'old'\n"
+            "from nooa.skill import Skill\nclass AttachSkill(Skill):\n    value = 'old'\n",
+            encoding="utf-8",
         )
         registry.discover_libs(tmp_path)
         old_skill = registry["test.attach"]
@@ -713,7 +754,8 @@ class TestReload:
             "class AttachSkill(Skill):\n"
             "    value = 'new'\n"
             "    def attach(self, agent):\n"
-            "        raise RuntimeError('attach failed')\n"
+            "        raise RuntimeError('attach failed')\n",
+            encoding="utf-8",
         )
 
         result = await registry.reload("test.attach")

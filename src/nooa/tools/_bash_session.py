@@ -11,6 +11,9 @@ Architecture:
   stdout <- pure command output (no sentinel parsing)
   stderr <- pure command stderr (no sentinel parsing)
   fd 3   <- exit code + cwd + sentinel (control channel)
+
+On Windows, bash is Git for Windows' MSYS2 bash and fd 3 is a loopback TCP
+connection instead of an inherited pipe; see ``_win_bash``.
 """
 
 import asyncio
@@ -19,9 +22,16 @@ import logging
 import os
 import secrets
 import signal
+import socket
+import subprocess
+import sys
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import aclosing, asynccontextmanager
 from pathlib import Path
+
+if sys.platform == "win32":
+    from nooa.tools import _win_bash
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +39,41 @@ MAX_OUTPUT_CHARS = 30_000
 _DRAIN_TIMEOUT = 0.05  # Seconds to wait for remaining output after sentinel
 _SIGTERM_GRACE = 5.0  # Seconds to wait for sentinel after SIGTERM
 _SIGKILL_GRACE = 2.0  # Seconds to wait for sentinel after SIGKILL
+_CONTROL_CONNECT_TIMEOUT = 10.0  # Windows: seconds for bash to open the control socket
+
+# Prints the session cwd on the control channel. MSYS2's ``pwd -W`` gives the
+# Windows form (``E:/src``) that Path understands; plain ``pwd`` gives ``/e/src``.
+PWD_COMMAND = "pwd -W" if sys.platform == "win32" else "pwd"
+
+# str.translate table that makes text safe inside bash's $'...' quoting: escape
+# the backslash and quote, and hex-escape every control character.
+_ANSI_C_ESCAPES = {
+    **{c: f"\\x{c:02x}" for c in [*range(0x20), 0x7F]},
+    ord("\\"): "\\\\",
+    ord("'"): "\\'",
+}
+
+
+async def _read_control_line(ctrl: asyncio.StreamReader, timeout: float) -> bytes:
+    """Next control-channel line, or b"" at EOF; raises TimeoutError.
+
+    On Windows the channel is a socket, and bash dying resets it (WinError 64)
+    instead of closing it cleanly. That is EOF too.
+    """
+    try:
+        return await asyncio.wait_for(ctrl.readline(), timeout=timeout)
+    except TimeoutError:
+        raise
+    except OSError:
+        return b""
+
+
+def _parse_cwd(line: str) -> Path | None:
+    """The cwd reported on the control channel, or None if it is not absolute."""
+    candidate = line.strip()
+    if not candidate or not Path(candidate).is_absolute():
+        return None
+    return Path(candidate)
 
 
 class BashSession:
@@ -58,12 +103,17 @@ class BashSession:
         self._process: asyncio.subprocess.Process | None = None
         self._control_reader: asyncio.StreamReader | None = None
         self._control_transport: asyncio.BaseTransport | None = None
+        self._control_writer: asyncio.StreamWriter | None = None  # Windows socket channel
+        self._job = None  # Windows: _win_bash.ProcessJob holding bash's process tree
         self._started = False
         self._started_on_loop: asyncio.AbstractEventLoop | None = None
         self._lock = asyncio.Lock()
+        # Loop that last replaced ``_lock`` in _ensure_lock_on_current_loop.
+        self._lock_loop: asyncio.AbstractEventLoop | None = None
         self._last_successful_command: float | None = None
         self._last_command: str = ""
         self._start_count: int = 0
+        self._close_task: asyncio.Task[None] | None = None
 
     @property
     def cwd(self) -> Path:
@@ -73,12 +123,21 @@ class BashSession:
     def __del__(self) -> None:
         """Best-effort cleanup: kill the bash subprocess if still running."""
         proc = self._process
+        job = self._job
+        if job is not None:
+            try:
+                job.close()
+            except Exception:
+                pass  # Win32 bindings may already be gone during shutdown.
         if proc is not None and proc.returncode is None:
             try:
                 # During interpreter shutdown, module globals (os, signal) may
                 # be None, causing TypeError. Broad except handles all cases.
-                pgid = os.getpgid(proc.pid)
-                os.killpg(pgid, signal.SIGKILL)
+                if sys.platform == "win32":
+                    proc.kill()
+                else:
+                    pgid = os.getpgid(proc.pid)
+                    os.killpg(pgid, signal.SIGKILL)
             except Exception:
                 try:
                     proc.kill()
@@ -120,7 +179,7 @@ class BashSession:
                 parts.append(f"  killed_by={sig_name}")
             # Try to read /proc/<pid>/status before it disappears
             try:
-                with open(f"/proc/{proc.pid}/status") as f:
+                with open(f"/proc/{proc.pid}/status", encoding="utf-8") as f:
                     for line in f:
                         if any(k in line for k in ("State:", "SigPnd:", "SigCgt:")):
                             parts.append(f"  /proc/status: {line.strip()}")
@@ -149,7 +208,18 @@ class BashSession:
         return diag
 
     async def start(self) -> None:
-        """Start the bash subprocess with a dedicated control fd."""
+        """Start the bash subprocess with a dedicated control fd.
+
+        Concurrent callers share one startup: the session lock serializes them,
+        and later callers find the session already started.
+        """
+        async with self._command_scope():
+            await self._start_unlocked()
+
+    async def _start_unlocked(self) -> None:
+        """start() for callers that already hold the lock."""
+        if self._close_task is not None:
+            await asyncio.shield(self._close_task)
         if self._started:
             return
 
@@ -158,6 +228,42 @@ class BashSession:
         env["PS1"] = ""
         env["TERM"] = "dumb"
 
+        if sys.platform == "win32":
+            await self._spawn_windows(env)
+        else:
+            await self._spawn_posix(env)
+        self._started = True
+        self._started_on_loop = asyncio.get_running_loop()
+        assert self._process is not None and self._process.stdin is not None
+
+        # Drain startup — send a no-op through the control channel.
+        sentinel = f"__CTRL_{secrets.token_hex(8)}__"
+        self._process.stdin.write(f"echo {sentinel} >&3\n".encode())
+        await self._process.stdin.drain()
+        await self._read_control_until(sentinel, timeout=5.0)
+
+        # Run the one-time init command (env setup) before any user command.
+        # ``_running_init`` guards against re-entry if _send_and_wait triggers a
+        # reset (which would call start() again). _send_and_wait drains
+        # stdout/stderr so init output never bleeds into the first user command.
+        if self._init_command and not self._running_init:
+            self._running_init = True
+            try:
+                init_sentinel = f"__CTRL_{secrets.token_hex(8)}__"
+                init_script = (
+                    f"{self._init_command}\n_nemo_ec=$?\n"
+                    f"echo $_nemo_ec >&3\n{PWD_COMMAND} >&3\necho {init_sentinel} >&3\n"
+                )
+                ctrl_lines, _out, _err, _timed = await self._send_and_wait(
+                    init_script, init_sentinel, timeout=60.0
+                )
+                if len(ctrl_lines) >= 2 and (cwd := _parse_cwd(ctrl_lines[1])):
+                    self._cwd = cwd
+            finally:
+                self._running_init = False
+
+    async def _spawn_posix(self, env: dict[str, str]) -> None:
+        """Start /bin/bash with the control channel on an inherited pipe (fd 3)."""
         # Create pipe for control channel (fd 3 inside bash).
         ctrl_r, ctrl_w = os.pipe()
         try:
@@ -193,34 +299,107 @@ class BashSession:
         )
         self._control_reader = reader
         self._control_transport = transport
-        self._started = True
-        self._started_on_loop = asyncio.get_running_loop()
 
-        # Drain startup — send a no-op through the control channel.
-        sentinel = f"__CTRL_{secrets.token_hex(8)}__"
-        self._process.stdin.write(f"echo {sentinel} >&3\n".encode())
-        await self._process.stdin.drain()
-        await self._read_control_until(sentinel, timeout=5.0)
+    async def _spawn_windows(self, env: dict[str, str]) -> None:
+        """Start MSYS2 bash in a Job Object; bash dials back the control channel.
 
-        # Run the one-time init command (env setup) before any user command.
-        # ``_running_init`` guards against re-entry if _send_and_wait triggers a
-        # reset (which would call start() again). _send_and_wait drains
-        # stdout/stderr so init output never bleeds into the first user command.
-        if self._init_command and not self._running_init:
-            self._running_init = True
+        Windows cannot hand bash an extra fd, so bash opens fd 3 itself as a
+        loopback TCP connection (``/dev/tcp``) and proves who it is with a
+        one-time token. The connection reaches EOF when bash dies, like the pipe.
+        """
+        assert sys.platform == "win32"
+        bash = _win_bash.find_bash()
+        env = _win_bash.bash_env(bash, env)
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            listener.setblocking(False)
+            port = listener.getsockname()[1]
+            process = await asyncio.create_subprocess_exec(
+                str(bash),
+                "--norc",
+                "--noprofile",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(self._cwd),
+                env=env,
+                # A hidden console, so console programs never flash a window.
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            self._process = process
             try:
-                init_sentinel = f"__CTRL_{secrets.token_hex(8)}__"
-                init_script = (
-                    f"{self._init_command}\n_nemo_ec=$?\n"
-                    f"echo $_nemo_ec >&3\npwd >&3\necho {init_sentinel} >&3\n"
+                # Bash is idle on stdin, so nothing it starts escapes the job.
+                self._job = _win_bash.ProcessJob()
+                self._job.assign(process.pid)
+                token = secrets.token_hex(16)
+                assert process.stdin is not None
+                process.stdin.write(
+                    f"exec 3<>/dev/tcp/127.0.0.1/{port}; echo {token} >&3\n".encode()
                 )
-                ctrl_lines, _out, _err, _timed = await self._send_and_wait(
-                    init_script, init_sentinel, timeout=60.0
+                await process.stdin.drain()
+                reader, writer = await asyncio.wait_for(
+                    self._accept_control(listener, token), timeout=_CONTROL_CONNECT_TIMEOUT
                 )
-                if len(ctrl_lines) >= 2 and ctrl_lines[1].strip().startswith("/"):
-                    self._cwd = Path(ctrl_lines[1].strip())
+            except BaseException:
+                self._close_job()
+                try:
+                    if process.returncode is None:
+                        try:
+                            process.kill()
+                        except ProcessLookupError:
+                            pass
+                    # Reap even a cancelled startup and close its pipe transports
+                    # before another attempt replaces the process reference.
+                    await process.communicate()
+                finally:
+                    self._process = None
+                raise
+        finally:
+            listener.close()
+        self._control_reader = reader
+        # Hold the writer: a StreamWriter closes its transport when collected.
+        self._control_writer = writer
+        self._control_transport = writer.transport
+
+    @staticmethod
+    async def _accept_control(
+        listener: socket.socket, token: str
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        """Accept the first connection that presents *token*; drop any other."""
+        loop = asyncio.get_running_loop()
+        while True:
+            conn, _ = await loop.sock_accept(listener)
+            try:
+                reader, writer = await asyncio.open_connection(sock=conn, limit=2**20)
+            except BaseException:
+                conn.close()
+                raise
+            authenticated = False
+            try:
+                try:
+                    line = await asyncio.wait_for(reader.readline(), timeout=2.0)
+                except (OSError, ValueError):
+                    # A reset, timeout, or oversized line from another local
+                    # client must not prevent bash from connecting.
+                    continue
+                if line.strip() == token.encode():
+                    authenticated = True
+                    return reader, writer
             finally:
-                self._running_init = False
+                if not authenticated:
+                    writer.close()
+                    try:
+                        await writer.wait_closed()
+                    except OSError:
+                        pass
+
+    def _close_job(self) -> None:
+        """Windows: kill everything bash started and release the job."""
+        job, self._job = self._job, None
+        if job is not None:
+            job.close()
 
     def _build_script(self, command: str, sentinel: str) -> str:
         """Compose the wire script: the command, then the control-channel protocol.
@@ -235,7 +414,13 @@ class BashSession:
         The payload travels in a here-string so command length is bounded by memory
         rather than ARG_MAX.
         """
-        protocol = f"_nemo_ec=$?\necho $_nemo_ec >&3\npwd >&3\necho {sentinel} >&3\n"
+        protocol = f"_nemo_ec=$?\necho $_nemo_ec >&3\n{PWD_COMMAND} >&3\necho {sentinel} >&3\n"
+        if sys.platform == "win32":
+            # MSYS2 emulates fork, so the command substitution and external
+            # base64 below cost ~80ms per command there. An ANSI-C quoted word
+            # is decoded by bash itself and, with every newline escaped, still
+            # keeps the command on one line.
+            return f"eval $'{command.translate(_ANSI_C_ESCAPES)}' </dev/null\n{protocol}"
         # b64encode, not encodebytes: the latter wraps at 76 characters, and a
         # newline inside the here-string would split the payload across lines.
         blob = base64.b64encode(command.encode()).decode()
@@ -243,11 +428,26 @@ class BashSession:
 
     def _ensure_lock_on_current_loop(self) -> None:
         """Recreate the lock if the event loop changed since it was created."""
-        if (
-            self._started_on_loop is not None
-            and self._started_on_loop is not asyncio.get_running_loop()
-        ):
+        loop = asyncio.get_running_loop()
+        # A caller on this loop already replaced the lock and may hold it while
+        # it restarts bash; replacing it again would let the next caller in.
+        if self._lock_loop is loop:
+            return
+        if self._started_on_loop is not None and self._started_on_loop is not loop:
             self._lock = asyncio.Lock()
+            self._lock_loop = loop
+
+    @asynccontextmanager
+    async def _command_scope(self) -> AsyncIterator[None]:
+        self._ensure_lock_on_current_loop()
+        async with self._lock:
+            try:
+                yield
+            except BaseException:
+                # A cancelled/abandoned command must not leave its readers or
+                # control replies for the next caller. Restart lazily on reuse.
+                await self.close()
+                raise
 
     async def run(self, command: str, timeout: float = 30.0) -> tuple[str, str, int]:
         """Run a command and return (stdout, stderr, exit_code).
@@ -259,8 +459,7 @@ class BashSession:
         Use ``run_with_timeout_flag()`` if you need to distinguish a real
         timeout from a command that exits 124 naturally.
         """
-        self._ensure_lock_on_current_loop()
-        async with self._lock:
+        async with self._command_scope():
             stdout, stderr, code, _ = await self._run_unlocked(command, timeout)
             return stdout, stderr, code
 
@@ -268,8 +467,7 @@ class BashSession:
         self, command: str, timeout: float = 30.0
     ) -> tuple[str, str, int, bool]:
         """Like run(), but returns a 4th element: whether the command timed out."""
-        self._ensure_lock_on_current_loop()
-        async with self._lock:
+        async with self._command_scope():
             return await self._run_unlocked(command, timeout)
 
     async def _run_unlocked(self, command: str, timeout: float) -> tuple[str, str, int, bool]:
@@ -278,7 +476,7 @@ class BashSession:
         Returns (stdout, stderr, exit_code, timed_out).
         """
         if not self._started:
-            await self.start()
+            await self._start_unlocked()
         elif self._started_on_loop is not asyncio.get_running_loop():
             await self._reset_for_loop_change()
 
@@ -298,10 +496,8 @@ class BashSession:
                 exit_code = int(ctrl_lines[0].strip())
             except (ValueError, IndexError):
                 pass
-            if len(ctrl_lines) >= 2:
-                candidate = ctrl_lines[1].strip()
-                if candidate.startswith("/"):
-                    self._cwd = Path(candidate)
+            if len(ctrl_lines) >= 2 and (cwd := _parse_cwd(ctrl_lines[1])):
+                self._cwd = cwd
 
         if len(stdout) > MAX_OUTPUT_CHARS:
             stdout = stdout[:MAX_OUTPUT_CHARS] + "\n... (output truncated)"
@@ -317,7 +513,7 @@ class BashSession:
 
     async def run_stream(
         self, command: str, timeout: float = 30.0
-    ) -> AsyncIterator[tuple[str, str]]:
+    ) -> AsyncGenerator[tuple[str, str]]:
         """Run a command and yield (stream_name, chunk) pairs as output arrives.
 
         stream_name is 'stdout' or 'stderr'. After the command finishes,
@@ -326,17 +522,22 @@ class BashSession:
 
         Concurrent calls are serialized via an internal lock.
         """
-        self._ensure_lock_on_current_loop()
-        async with self._lock:
-            async for item in self._run_stream_unlocked(command, timeout):
-                yield item
+        async with self._command_scope():
+            async with aclosing(self._run_stream_unlocked(command, timeout)) as stream:
+                async for item in stream:
+                    try:
+                        yield item
+                    except GeneratorExit:
+                        if item[0] == "__done__":
+                            return  # The caller consumed the completion marker.
+                        raise
 
     async def _run_stream_unlocked(
         self, command: str, timeout: float
-    ) -> AsyncIterator[tuple[str, str]]:
+    ) -> AsyncGenerator[tuple[str, str]]:
         """Actual run_stream implementation (caller must hold self._lock)."""
         if not self._started:
-            await self.start()
+            await self._start_unlocked()
         elif self._started_on_loop is not asyncio.get_running_loop():
             await self._reset_for_loop_change()
 
@@ -395,16 +596,12 @@ class BashSession:
         stdout_task = asyncio.create_task(_read_stream(proc.stdout, "stdout", stdout_queue))
         stderr_task = asyncio.create_task(_read_stream(proc.stderr, "stderr", stderr_queue))
 
-        ctrl_lines, timed_out = await self._read_control_until(sentinel, timeout)
-
-        # Sentinel received — cancel readers and drain remaining.
-        stdout_task.cancel()
-        stderr_task.cancel()
-        for task in (stdout_task, stderr_task):
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+        try:
+            ctrl_lines, timed_out = await self._read_control_until(sentinel, timeout)
+        finally:
+            stdout_task.cancel()
+            stderr_task.cancel()
+            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
 
         # Drain queues
         for q in (stdout_queue, stderr_queue):
@@ -431,10 +628,8 @@ class BashSession:
                 exit_code = int(ctrl_lines[0].strip())
             except (ValueError, IndexError):
                 pass
-            if len(ctrl_lines) >= 2:
-                candidate = ctrl_lines[1].strip()
-                if candidate.startswith("/"):
-                    self._cwd = Path(candidate)
+            if len(ctrl_lines) >= 2 and (cwd := _parse_cwd(ctrl_lines[1])):
+                self._cwd = cwd
 
         if timed_out:
             exit_code = 124
@@ -504,17 +699,14 @@ class BashSession:
         stdout_task = asyncio.create_task(accumulate(proc.stdout, stdout_buf))
         stderr_task = asyncio.create_task(accumulate(proc.stderr, stderr_buf))
 
-        ctrl_lines, timed_out = await self._read_control_until(sentinel, timeout)
-
-        # Cancel accumulators FIRST to avoid concurrent StreamReader access.
-        # StreamReader does not support multiple concurrent readers.
-        stdout_task.cancel()
-        stderr_task.cancel()
-        for task in (stdout_task, stderr_task):
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+        try:
+            ctrl_lines, timed_out = await self._read_control_until(sentinel, timeout)
+        finally:
+            # Also cancel on exceptional exits, before close() or a later
+            # command can read from these same StreamReaders.
+            stdout_task.cancel()
+            stderr_task.cancel()
+            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
 
         # Now greedy-drain remaining output (sole reader per stream, safe).
         for stream, buf in [(proc.stdout, stdout_buf), (proc.stderr, stderr_buf)]:
@@ -539,7 +731,7 @@ class BashSession:
         timed_out = False
         while True:
             try:
-                raw = await asyncio.wait_for(ctrl.readline(), timeout=timeout)
+                raw = await _read_control_line(ctrl, timeout)
             except TimeoutError:
                 timed_out = True
                 break
@@ -578,13 +770,25 @@ class BashSession:
         async def try_drain(grace: float) -> bool:
             while True:
                 try:
-                    raw = await asyncio.wait_for(ctrl.readline(), timeout=grace)
+                    raw = await _read_control_line(ctrl, grace)
                 except TimeoutError:
                     return False
                 if not raw:
                     return False
                 if sentinel in raw.decode("utf-8", errors="replace"):
                     return True
+
+        if sys.platform == "win32":
+            # No signals: terminate every process bash started, then wait for
+            # bash to finish the protocol. A busy builtin (no child process)
+            # cannot be interrupted, so the caller resets the session instead.
+            for grace in (_SIGTERM_GRACE, _SIGKILL_GRACE):
+                job = self._job
+                if job is None or not job.kill_descendants(proc.pid):
+                    return False
+                if await try_drain(grace):
+                    return True
+            return False
 
         async def kill_children(sig: int) -> None:
             killed_any = False
@@ -638,25 +842,72 @@ class BashSession:
         await self.reset()
 
     async def reset(self) -> None:
-        """Kill the current session and start a fresh one, preserving cwd."""
+        """Kill the current session and start a fresh one, preserving cwd.
+
+        Called with the lock held on recovery paths, so it must not take it.
+        """
         cwd = self._cwd
         await self.close()
         self._cwd = cwd
-        await self.start()
+        await self._start_unlocked()
 
     async def close(self) -> None:
-        """Terminate the bash session cleanly."""
+        """Terminate the session, finishing cleanup even if the caller is cancelled."""
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close_impl())
+        task = self._close_task
+        cancelled = None
+        try:
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError as exc:
+                    cancelled = exc
+            task.result()
+        finally:
+            if task.done() and self._close_task is task:
+                self._close_task = None
+        if cancelled is not None:
+            raise cancelled
+
+    async def _close_impl(self) -> None:
+        proc = self._process
+        # Process has no public accessor for its loop or subprocess transport.
+        # Use the physical owner, not _started_on_loop (the logical session).
+        owner_loop: asyncio.AbstractEventLoop | None = getattr(proc, "_loop", self._started_on_loop)
+        same_loop = owner_loop is asyncio.get_running_loop()
+        stale_windows = (
+            sys.platform == "win32" and owner_loop is not None and owner_loop.is_closed()
+        )
         if self._control_transport is not None:
-            try:
-                self._control_transport.close()
-            except Exception:
-                pass  # Transport may be bound to a dead loop (gl-212)
+            if stale_windows:
+                _win_bash.close_stale_pipe(self._control_transport)
+            else:
+                try:
+                    self._control_transport.close()
+                except Exception:
+                    pass  # Transport may be bound to a dead loop (gl-212)
             self._control_transport = None
+        writer = self._control_writer
+        if writer is not None and same_loop:
+            try:
+                await writer.wait_closed()
+            except OSError:
+                pass
+        self._control_writer = None
         self._control_reader = None
 
         if self._process is not None and self._process.returncode is None:
-            same_loop = self._started_on_loop is asyncio.get_running_loop()
-            if same_loop:
+            if sys.platform == "win32":
+                # The job holds bash and everything it started; Windows has no
+                # graceful equivalent of SIGTERM for them.
+                self._close_job()
+                if same_loop:
+                    try:
+                        await asyncio.wait_for(self._process.wait(), timeout=3.0)
+                    except TimeoutError:
+                        pass
+            elif same_loop:
                 # Graceful shutdown: SIGTERM → wait → SIGKILL on timeout
                 try:
                     pgid = os.getpgid(self._process.pid)
@@ -684,7 +935,36 @@ class BashSession:
                         self._process.kill()
                     except Exception:
                         pass
+        # Also reaps background jobs that outlived an already-dead bash.
+        self._close_job()
+        if proc is not None:
+            transport: asyncio.SubprocessTransport | None = getattr(proc, "_transport", None)
+            assert transport is not None
+            if stale_windows:
+                native = transport.get_extra_info("subprocess")
+                if native is not None:
+                    await asyncio.to_thread(native.wait, 3.0)
+                for fd in (0, 1, 2):
+                    pipe = transport.get_pipe_transport(fd)
+                    if pipe is not None:
+                        _win_bash.close_stale_pipe(pipe)
+            try:
+                transport.close()
+            except RuntimeError:
+                if not (owner_loop is not None and owner_loop.is_closed()):
+                    raise
+            if same_loop and proc.stdin is not None:
+                try:
+                    await proc.stdin.wait_closed()
+                except (OSError, BrokenPipeError):
+                    pass
         self._process = None
         self._started = False
         self._started_on_loop = None
-        self._lock = asyncio.Lock()
+        # A fresh lock lets a later caller on another loop start cleanly. Keep
+        # the current one while it is held: reset() runs close() under the
+        # lock, and swapping it there would let a queued caller start a second
+        # bash concurrently.
+        if not self._lock.locked():
+            self._lock = asyncio.Lock()
+            self._lock_loop = None

@@ -62,7 +62,7 @@ async def test_write_and_replace_emit_bounded_structured_file_edits(tmp_path):
 
 async def test_match_replace_emits_actual_before_and_after_text(tmp_path):
     shell, events = _observed_shell(tmp_path)
-    (tmp_path / "example.txt").write_text("one\ntwo\nthree\n")
+    (tmp_path / "example.txt").write_text("one\ntwo\nthree\n", encoding="utf-8")
     try:
         match = await shell.read("example.txt", lines=(2, 2))
         await shell.replace(match, "changed")
@@ -74,7 +74,7 @@ async def test_match_replace_emits_actual_before_and_after_text(tmp_path):
     # replace() re-terminates the region so the following line survives; the
     # event has to report the text that actually landed in the file.
     assert edit.new_text == "changed\n"
-    assert (tmp_path / "example.txt").read_text() == "one\nchanged\nthree\n"
+    assert (tmp_path / "example.txt").read_text(encoding="utf-8") == "one\nchanged\nthree\n"
     assert (edit.start_line, edit.end_line) == (2, 2)
     # difflib omits the count for a single-line hunk; the offset is what matters.
     assert "@@ -2 +2 @@" in edit.diff
@@ -82,7 +82,7 @@ async def test_match_replace_emits_actual_before_and_after_text(tmp_path):
 
 async def test_match_replace_at_end_of_file_keeps_the_file_terminated(tmp_path):
     shell, events = _observed_shell(tmp_path)
-    (tmp_path / "example.txt").write_text("one\ntwo\nthree\n")
+    (tmp_path / "example.txt").write_text("one\ntwo\nthree\n", encoding="utf-8")
     try:
         match = await shell.read("example.txt", lines=(3, 3))
         await shell.replace(match, "changed")
@@ -93,16 +93,16 @@ async def test_match_replace_at_end_of_file_keeps_the_file_terminated(tmp_path):
     # The region reaches EOF in a file that ended with a newline, so the
     # replacement is re-terminated — and reported as what was actually written.
     assert edit.new_text == "changed\n"
-    assert (tmp_path / "example.txt").read_text() == "one\ntwo\nchanged\n"
+    assert (tmp_path / "example.txt").read_text(encoding="utf-8") == "one\ntwo\nchanged\n"
 
 
 async def test_match_replace_after_cwd_change_emits_original_path(tmp_path):
     shell, events = _observed_shell(tmp_path)
     original = tmp_path / "example.txt"
-    original.write_text("before\n")
+    original.write_text("before\n", encoding="utf-8")
     other = tmp_path / "other"
     other.mkdir()
-    (other / "example.txt").write_text("wrong file\n")
+    (other / "example.txt").write_text("wrong file\n", encoding="utf-8")
     try:
         match = await shell.read("example.txt")
         await shell.run("cd other")
@@ -113,8 +113,8 @@ async def test_match_replace_after_cwd_change_emits_original_path(tmp_path):
     edit = next(event for event in events if isinstance(event, FileEdit))
     assert edit.path == str(original)
     # Whole-file region at EOF keeps the file newline-terminated.
-    assert original.read_text() == "after\n"
-    assert (other / "example.txt").read_text() == "wrong file\n"
+    assert original.read_text(encoding="utf-8") == "after\n"
+    assert (other / "example.txt").read_text(encoding="utf-8") == "wrong file\n"
 
 
 async def test_observing_an_overwrite_does_not_break_binary_file_replacement(tmp_path):
@@ -132,7 +132,7 @@ async def test_observing_an_overwrite_does_not_break_binary_file_replacement(tmp
     assert edit.content_complete is False
     assert edit.diff_complete is False
     assert "previous file content could not be read" in edit.diff
-    assert (tmp_path / "binary.dat").read_text() == "now text"
+    assert (tmp_path / "binary.dat").read_text(encoding="utf-8") == "now text"
 
 
 async def test_large_text_file_keeps_a_real_line_oriented_diff(tmp_path):
@@ -141,7 +141,7 @@ async def test_large_text_file_keeps_a_real_line_oriented_diff(tmp_path):
     new_lines = list(old_lines)
     new_lines[125] = "section 125: corrected agenda text\n"
     path = tmp_path / "agenda.md"
-    path.write_text("".join(old_lines))
+    path.write_text("".join(old_lines), encoding="utf-8")
     try:
         await shell.write_file(str(path), "".join(new_lines))
     finally:
@@ -361,7 +361,7 @@ def test_fragment_diffs_do_not_claim_a_missing_final_newline():
 async def test_overwriting_an_empty_file_reports_no_original_lines(tmp_path):
     """An existing empty file has no line 1 to point at."""
     shell, events = _observed_shell(tmp_path)
-    (tmp_path / "empty.txt").write_text("")
+    (tmp_path / "empty.txt").write_text("", encoding="utf-8")
     try:
         await shell.write_file("empty.txt", "now has content\n")
     finally:
@@ -410,7 +410,7 @@ async def test_overwrite_reads_the_previous_content_boundedly(tmp_path):
         return stream
 
     target = tmp_path / "big.txt"
-    target.write_text("x" * 5000)
+    target.write_text("x" * 5000, encoding="utf-8")
     shell, _ = _observed_shell(tmp_path)
     try:
         with pytest.MonkeyPatch.context() as patcher:

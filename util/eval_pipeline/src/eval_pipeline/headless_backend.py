@@ -224,7 +224,10 @@ class HeadlessOtlpBackend:
         """Start the backend. Returns base URL, e.g. 'http://127.0.0.1:54321'."""
         from nooa.viewer import otlp_store
 
-        self._tmpdir = tempfile.TemporaryDirectory()
+        # otlp_store keeps per-thread SQLite connections on uvicorn's worker
+        # threads, so the DB is still open at stop(). POSIX unlinks open files;
+        # Windows refuses, so tolerate that and leave the temp dir behind there.
+        self._tmpdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         db_path = Path(self._tmpdir.name) / "eval_traces.db"
         self._port = _find_free_port()
 

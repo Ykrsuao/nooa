@@ -104,7 +104,9 @@ def test_each_check_stage_is_independent_json(monkeypatch, tmp_path, stage, coun
 
     mock_http(monkeypatch, handle)
     path = tmp_path / "levels.yaml"
-    path.write_text("high: {reasoning_effort: high}\nlow: {reasoning_effort: low}\n")
+    path.write_text(
+        "high: {reasoning_effort: high}\nlow: {reasoning_effort: low}\n", encoding="utf-8"
+    )
     args = [*BASE, "--stage", stage, "--levels-file", str(path)]
     result = CliRunner().invoke(command, args, input="")
     assert result.exit_code == 0, result.output
@@ -150,13 +152,16 @@ def test_plan_then_explicit_save_has_no_http(monkeypatch, tmp_path):
     planned = CliRunner().invoke(command, [*BASE, "--stage", "plan"])
     assert planned.exit_code == 0, planned.output
     source = tmp_path / "plan.json"
-    source.write_text(planned.stdout)
+    source.write_text(planned.stdout, encoding="utf-8")
     target = tmp_path / "models.yaml"
     saved = CliRunner().invoke(
         command, ["--stage", "save", "--input", str(source), "--output", str(target)]
     )
     assert saved.exit_code == 0, saved.output
-    assert yaml.safe_load(target.read_text())["models"]["local"]["model_name"] == "openai/gpt-5.1"
+    assert (
+        yaml.safe_load(target.read_text(encoding="utf-8"))["models"]["local"]["model_name"]
+        == "openai/gpt-5.1"
+    )
     blocked = CliRunner().invoke(
         command, ["--stage", "save", "--input", str(source), "--output", str(target)]
     )
@@ -247,7 +252,7 @@ def test_acceptance_without_feature_evidence_is_inconclusive(monkeypatch, tmp_pa
     monkeypatch.setenv("STAGE_TEST_KEY", "test-secret")
     mock_http(monkeypatch, lambda request: httpx.Response(200, json=response_body("chat")))
     levels = tmp_path / "levels.yaml"
-    levels.write_text("high: {reasoning_effort: high}\n")
+    levels.write_text("high: {reasoning_effort: high}\n", encoding="utf-8")
     result = CliRunner().invoke(command, [*BASE, "--stage", stage, "--levels-file", str(levels)])
     assert result.exit_code == 1
     report = json.loads(result.stdout)
@@ -282,7 +287,7 @@ def test_invalid_save_document_still_returns_safe_json(monkeypatch, tmp_path, en
     mock_http(monkeypatch, lambda request: pytest.fail("Save must not send HTTP"))
     source = tmp_path / "invalid.json"
     target = tmp_path / "models.yaml"
-    source.write_text(json.dumps({"alias": "test", "entry": entry}))
+    source.write_text(json.dumps({"alias": "test", "entry": entry}), encoding="utf-8")
     result = CliRunner().invoke(
         command, ["--stage", "save", "--input", str(source), "--output", str(target)]
     )

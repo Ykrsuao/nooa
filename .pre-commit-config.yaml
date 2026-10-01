@@ -33,6 +33,15 @@ repos:
         language: system
         types_or: [python, jupyter]
 
+      # Explicit text encodings — mirrors the CI step. Implicit encodings use
+      # the locale codec (GBK/cp1252 on Windows). PLW1514 is preview-only, so
+      # it runs alone instead of turning on preview for every rule.
+      - id: ruff-encoding
+        name: ruff-encoding
+        entry: uv run ruff check --preview --select PLW1514
+        language: system
+        types_or: [python]
+
       # Type checking with pyright (core library code only)
       # Scoped to packages/ and src/ — experiments, agents, and util scripts
       # have optional deps and loose typing that produce false positives.

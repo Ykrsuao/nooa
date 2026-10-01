@@ -61,10 +61,12 @@ async def test_journal_file_is_stripped_and_import_reconstructs_messages(tmp_pat
 
     artifact = tmp_path / f"{session_id}.nooa.jsonl"
     assert artifact.exists()
-    bodies = [json.loads(line) for line in artifact.read_text().splitlines()]
+    bodies = [json.loads(line) for line in artifact.read_text(encoding="utf-8").splitlines()]
     records = [body["nooaJournal"] for body in bodies if "nooaJournal" in body]
     assert {record["type"] for record in records} == {"manifest", "blocks", "call"}
-    assert sum(input_text in line for line in artifact.read_text().splitlines()) == 1
+    assert (
+        sum(input_text in line for line in artifact.read_text(encoding="utf-8").splitlines()) == 1
+    )
 
     otlp_bodies = [body for body in bodies if "resourceSpans" in body]
     llm_spans = [
@@ -142,7 +144,7 @@ def test_journal_file_records_failed_call_input(tmp_path: Path):
     flush_traces()
 
     artifact = tmp_path / f"{session_id}.nooa.jsonl"
-    bodies = [json.loads(line) for line in artifact.read_text().splitlines()]
+    bodies = [json.loads(line) for line in artifact.read_text(encoding="utf-8").splitlines()]
     calls = [
         body["nooaJournal"]["call"]
         for body in bodies
@@ -189,7 +191,8 @@ def test_harbor_import_posts_journal_with_trial_session(monkeypatch, tmp_path: P
                 json.dumps({"resourceSpans": []}),
             ]
         )
-        + "\n"
+        + "\n",
+        encoding="utf-8",
     )
     posted: list[tuple[str, str]] = []
     monkeypatch.setattr(

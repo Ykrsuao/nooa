@@ -73,7 +73,7 @@ def test_pipe_error_fields():
 @pytest.mark.asyncio
 async def test_cat(tmp_path):
     f = tmp_path / "test.txt"
-    f.write_text("line1\nline2\nline3\n")
+    f.write_text("line1\nline2\nline3\n", encoding="utf-8")
     result = await cat(str(f)).collect()
     assert result == ["line1", "line2", "line3"]
 
@@ -82,8 +82,8 @@ async def test_cat(tmp_path):
 async def test_cat_multiple(tmp_path):
     f1 = tmp_path / "a.txt"
     f2 = tmp_path / "b.txt"
-    f1.write_text("a\n")
-    f2.write_text("b\n")
+    f1.write_text("a\n", encoding="utf-8")
+    f2.write_text("b\n", encoding="utf-8")
     result = await cat(str(f1), str(f2)).collect()
     assert result == ["a", "b"]
 
@@ -108,11 +108,11 @@ async def test_run_check_false():
 
 @pytest.mark.asyncio
 async def test_find_files(tmp_path):
-    (tmp_path / "a.py").write_text("")
-    (tmp_path / "b.txt").write_text("")
+    (tmp_path / "a.py").write_text("", encoding="utf-8")
+    (tmp_path / "b.txt").write_text("", encoding="utf-8")
     sub = tmp_path / "sub"
     sub.mkdir()
-    (sub / "c.py").write_text("")
+    (sub / "c.py").write_text("", encoding="utf-8")
     result = await find(str(tmp_path), name="*.py").collect()
     assert len(result) == 2
     assert all(".py" in r for r in result)
@@ -120,9 +120,9 @@ async def test_find_files(tmp_path):
 
 @pytest.mark.asyncio
 async def test_glob_files(tmp_path):
-    (tmp_path / "a.py").write_text("")
-    (tmp_path / "b.py").write_text("")
-    (tmp_path / "c.txt").write_text("")
+    (tmp_path / "a.py").write_text("", encoding="utf-8")
+    (tmp_path / "b.py").write_text("", encoding="utf-8")
+    (tmp_path / "c.txt").write_text("", encoding="utf-8")
     result = await glob("*.py", root=str(tmp_path)).collect()
     assert len(result) == 2
 
@@ -276,7 +276,7 @@ async def test_tee(tmp_path):
     outfile = str(tmp_path / "tee_out.txt")
     result = await items(["a", "b", "c"]).tee(outfile).collect()
     assert result == ["a", "b", "c"]
-    content = Path(outfile).read_text()
+    content = Path(outfile).read_text(encoding="utf-8")
     assert "a\n" in content
     assert "c\n" in content
 
@@ -325,7 +325,7 @@ async def test_chained_pipeline():
 @pytest.mark.asyncio
 async def test_full_pipeline(tmp_path):
     f = tmp_path / "data.txt"
-    f.write_text("ERROR: disk full\nINFO: ok\nERROR: timeout\nDEBUG: trace\n")
+    f.write_text("ERROR: disk full\nINFO: ok\nERROR: timeout\nDEBUG: trace\n", encoding="utf-8")
     result = await cat(str(f)).grep("ERROR").sed("ERROR: ", "").sort().collect()
     assert result == ["disk full", "timeout"]
 
@@ -363,7 +363,7 @@ async def test_write(tmp_path):
     out = tmp_path / "out.txt"
     n = await items(["x", "y", "z"]).write(str(out))
     assert n == 3
-    assert out.read_text() == "x\ny\nz\n"
+    assert out.read_text(encoding="utf-8") == "x\ny\nz\n"
 
 
 @pytest.mark.asyncio

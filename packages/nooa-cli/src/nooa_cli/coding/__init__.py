@@ -3,6 +3,20 @@
 """Shared coding-agent components used by terminal and protocol hosts."""
 
 from importlib import import_module
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .activity import (
+        ActivityShellTools,
+        FileEdit,
+        TerminalCommandFinished,
+        TerminalCommandOutput,
+        TerminalCommandStarted,
+    )
+    from .agent import CodingAgent
+    from .instructions import discover_agent_instruction_files, render_agent_instructions
+    from .settings import load_coding_skills_dirs
+    from .slash_commands import CodingSlashCommand, CodingSlashCommandRegistry
 
 _EXPORT_MODULES = {
     "ActivityShellTools": "activity",

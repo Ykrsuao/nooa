@@ -8,6 +8,8 @@ Focus on:
 - Variable expansion in messages
 """
 
+import os
+
 import pytest
 
 from nooa import Agent
@@ -149,7 +151,7 @@ async def test_expansion_allows_import():
 
     # No sandboxing - imports are allowed
     result = await agent_instance.runtime.expand_variables(text)
-    assert "Import: os" in result or "Import: posix" in result
+    assert f"Import: {os.name}" in result
 
 
 @pytest.mark.asyncio

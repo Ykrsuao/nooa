@@ -38,7 +38,7 @@ def _otlp_body(index: int) -> dict:
 def _write_trace(path: Path, count: int, *extra_records: dict) -> None:
     records = [_otlp_body(index) for index in range(count)]
     records.extend(extra_records)
-    path.write_text("\n".join(json.dumps(record) for record in records) + "\n")
+    path.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
 
 
 def _patch_viewer_preflight(
@@ -374,7 +374,7 @@ def test_import_injects_batch_and_session_attributes(
         {"key": "batch_id", "value": {"stringValue": "old-batch"}},
         {"key": "session.id", "value": {"stringValue": "old-session"}},
     ]
-    trace_file.write_text(json.dumps(body) + "\n")
+    trace_file.write_text(json.dumps(body) + "\n", encoding="utf-8")
     _patch_viewer_preflight(monkeypatch)
     posted: list[dict] = []
 
@@ -403,7 +403,7 @@ def test_import_flushes_before_crossing_batch_byte_limit(
     records = [_otlp_body(1), _otlp_body(2)]
     serialized = [json.dumps(record) for record in records]
     trace_file = tmp_path / "session.jsonl"
-    trace_file.write_text("\n".join(serialized) + "\n")
+    trace_file.write_text("\n".join(serialized) + "\n", encoding="utf-8")
     _patch_viewer_preflight(monkeypatch, stored_span_count=2)
     batch_sizes: list[int] = []
 
@@ -458,7 +458,8 @@ def test_annotation_only_file_is_imported(
 ):
     trace_file = tmp_path / "session.jsonl"
     trace_file.write_text(
-        json.dumps({"annotations": [{"session_id": "session", "name": "quality"}]}) + "\n"
+        json.dumps({"annotations": [{"session_id": "session", "name": "quality"}]}) + "\n",
+        encoding="utf-8",
     )
     _patch_viewer_preflight(monkeypatch)
     monkeypatch.setattr(
@@ -493,7 +494,8 @@ def test_journal_only_file_is_imported(
                 }
             }
         )
-        + "\n"
+        + "\n",
+        encoding="utf-8",
     )
     _patch_viewer_preflight(monkeypatch)
     monkeypatch.setattr(

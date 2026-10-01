@@ -284,7 +284,7 @@ class ReleaseManifest:
     def write(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.data, indent=2, sort_keys=True) + "\n")
+        tmp.write_text(json.dumps(self.data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         tmp.replace(self.path)
 
     def update(self, **values: Any) -> None:
@@ -649,7 +649,7 @@ class ArmResults:
 
 def parse_results(path: Path, label: str) -> ArmResults:
     arm = ArmResults(label=label)
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         try:
@@ -684,7 +684,9 @@ def env_extras() -> list[str]:
     """
     locked = {
         name.lower()
-        for name in re.findall(r'^name = "([^"]+)"', (REPO / "uv.lock").read_text(), re.MULTILINE)
+        for name in re.findall(
+            r'^name = "([^"]+)"', (REPO / "uv.lock").read_text(encoding="utf-8"), re.MULTILINE
+        )
     }
     extras: list[str] = []
     for raw in run(["uv", "pip", "freeze"]).stdout.splitlines():
@@ -759,7 +761,7 @@ def run_capability_arm(
         not strict_ci
         and existing
         and marker.exists()
-        and json.loads(marker.read_text()) == signature
+        and json.loads(marker.read_text(encoding="utf-8")) == signature
     ):
         ok(f"{label}: reusing cached results ({existing.name})")
         return parse_results(existing, label)
@@ -905,7 +907,7 @@ def run_capability_arm(
             f"{label}: {arm.error_rate():.0%} of samples errored{detail} — "
             f"this is an infrastructure failure, not a capability result"
         )
-    marker.write_text(json.dumps(signature))
+    marker.write_text(json.dumps(signature), encoding="utf-8")
     return arm
 
 
@@ -1289,7 +1291,7 @@ def capability_diff(
     diff = compare(base_arm, head_arm, prev_tag, sha, runs)
     report_path = artifact_dir / "capability-report.md" if artifact_dir else REPORT_PATH
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(diff.markdown)
+    report_path.write_text(diff.markdown, encoding="utf-8")
     print(f"\n  {DIM}markdown report: {report_path}{RESET}")
     return diff, base_arm, head_arm
 
@@ -1493,7 +1495,8 @@ def _copy_distributions(artifact_dir: Path) -> list[dict[str, str]]:
         records.append({"path": str(destination), "sha256": sha256(destination)})
     checksum_file = artifact_dir / "CHECKSUMS.sha256"
     checksum_file.write_text(
-        "".join(f"{item['sha256']}  {Path(item['path']).name}\n" for item in records)
+        "".join(f"{item['sha256']}  {Path(item['path']).name}\n" for item in records),
+        encoding="utf-8",
     )
     return records
 
@@ -1514,7 +1517,7 @@ def _write_job_summary(artifact_dir: Path, manifest: ReleaseManifest) -> None:
         lines.append(f"- GitHub draft: {data['github_draft_url']}")
     if data.get("failure"):
         lines.append(f"- Failure: {data['failure']}")
-    (artifact_dir / "job-summary.md").write_text("\n".join(lines) + "\n")
+    (artifact_dir / "job-summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def ci_main(args: argparse.Namespace) -> int:
@@ -1679,7 +1682,7 @@ def ci_main(args: argparse.Namespace) -> int:
             change_notes=change_notes,
         )
         notes_path = artifact_dir / "public-release-notes.md"
-        notes_path.write_text(notes)
+        notes_path.write_text(notes, encoding="utf-8")
         manifest.update(public_release_notes_sha256=sha256(notes_path))
 
         if args.create_draft:
@@ -1758,7 +1761,7 @@ def local_main(args: argparse.Namespace) -> int:
         diff=diff,
         change_notes=change_notes,
     )
-    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as fh:
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".md", delete=False) as fh:
         fh.write(notes)
         notes_path = Path(fh.name)
     try:

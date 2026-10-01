@@ -88,7 +88,9 @@ def test_import_179_records_stores_every_span(fresh_viewer, tmp_path):
 
     session_id = "large-import"
     trace_file = tmp_path / f"{session_id}.jsonl"
-    trace_file.write_text("\n".join(json.dumps(_otlp_body(index)) for index in range(179)) + "\n")
+    trace_file.write_text(
+        "\n".join(json.dumps(_otlp_body(index)) for index in range(179)) + "\n", encoding="utf-8"
+    )
 
     result = CliRunner().invoke(
         command,
@@ -121,7 +123,9 @@ def test_import_reports_viewer_ingest_failure(fresh_viewer, tmp_path):
         "not-an-integer"
     )
     trace_file = tmp_path / "failed-ingest.jsonl"
-    trace_file.write_text(f"{json.dumps(good_body)}\n{json.dumps(malformed_body)}\n")
+    trace_file.write_text(
+        f"{json.dumps(good_body)}\n{json.dumps(malformed_body)}\n", encoding="utf-8"
+    )
 
     result = CliRunner().invoke(
         command,
@@ -175,7 +179,11 @@ async def test_save_then_import_then_download_preserves_messages(fresh_viewer):
         saved = files[0]
 
         # 2. Capture the file's spans (truth source).
-        file_bodies = [json.loads(line) for line in saved.read_text().splitlines() if line.strip()]
+        file_bodies = [
+            json.loads(line)
+            for line in saved.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
         file_spans = {
             sp.get("spanId"): sp
             for body in file_bodies

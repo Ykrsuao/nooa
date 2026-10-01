@@ -447,7 +447,7 @@ class ActivityShellTools(Skill):
             start_line = None
             end_line = None
             try:
-                with resolved.open("r") as stream:
+                with resolved.open("r", encoding="utf-8") as stream:
                     content = stream.read(_MAX_EVENT_TEXT_CHARS + 1)
                 if len(content) <= _MAX_EVENT_TEXT_CHARS:
                     offset = content.index(old_text)
@@ -497,7 +497,7 @@ class ActivityShellTools(Skill):
         old_content_complete = not existed
         if existed:
             try:
-                with resolved.open("r") as stream:
+                with resolved.open("r", encoding="utf-8") as stream:
                     old_diff_text = stream.read(_MAX_DIFF_INPUT_CHARS + 1)
                 old_content_complete = len(old_diff_text) <= _MAX_EVENT_TEXT_CHARS
             except (OSError, UnicodeError):

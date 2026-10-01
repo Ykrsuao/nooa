@@ -29,8 +29,8 @@ def test_agent_instructions_follow_repository_hierarchy(tmp_path):
     nested.mkdir(parents=True)
     root_instructions = tmp_path / "AGENTS.md"
     package_instructions = tmp_path / "packages" / "AGENTS.md"
-    root_instructions.write_text("root rule")
-    package_instructions.write_text("package rule")
+    root_instructions.write_text("root rule", encoding="utf-8")
+    package_instructions.write_text("package rule", encoding="utf-8")
 
     assert discover_agent_instruction_files(nested) == (
         root_instructions,
@@ -40,7 +40,7 @@ def test_agent_instructions_follow_repository_hierarchy(tmp_path):
 
 async def test_coding_agent_uses_observed_shell_and_instruction_context(tmp_path):
     (tmp_path / ".git").mkdir()
-    (tmp_path / "AGENTS.md").write_text("run the focused tests")
+    (tmp_path / "AGENTS.md").write_text("run the focused tests", encoding="utf-8")
     agent = CodingAgent(llm=FakeLLMClient(), cwd=tmp_path)
     try:
         assert agent.shell.session is agent._base_shell.session
@@ -56,7 +56,8 @@ async def test_directory_workflow_skills_are_loaded_but_opt_in(tmp_path):
     skill_dir = skills_dir / "root-cause"
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
-        "---\nname: root-cause\ndescription: Diagnose a defect\n---\nFind the cause.\n"
+        "---\nname: root-cause\ndescription: Diagnose a defect\n---\nFind the cause.\n",
+        encoding="utf-8",
     )
 
     agent = CodingAgent(
@@ -185,7 +186,7 @@ def test_repository_instructions_are_read_boundedly(tmp_path, monkeypatch):
 
     monkeypatch.setattr(Path, "open", spying_open)
     monkeypatch.setattr(instructions, "_MAX_INSTRUCTION_FILE_CHARS", 100)
-    (tmp_path / "AGENTS.md").write_text("x" * 10_000)
+    (tmp_path / "AGENTS.md").write_text("x" * 10_000, encoding="utf-8")
 
     rendered = instructions.render_agent_instructions(tmp_path)
 

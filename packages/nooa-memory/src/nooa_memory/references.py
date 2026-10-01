@@ -73,7 +73,9 @@ def _contained_file(key: str) -> Path:
     """
     root = Path.cwd().resolve()
     candidate = Path(key)
-    if candidate.is_absolute():
+    # Windows rooted (\file) and drive-relative (C:file) paths also have an
+    # anchor, but is_absolute() does not reject them.
+    if candidate.anchor:
         raise ValueError(f"file reference must be relative to the working dir: {key!r}")
     resolved = (root / candidate).resolve()
     if not resolved.is_relative_to(root):
@@ -108,7 +110,7 @@ def _lookup(agent: object, store: MemoryStore, kind: str, key: str) -> str | Non
         if not path.is_file():
             return None
         try:
-            return _clip(path.read_text(errors="replace")[:_MAX_FILE_CHARS])
+            return _clip(path.read_text(errors="replace", encoding="utf-8")[:_MAX_FILE_CHARS])
         except OSError:
             return None
     if kind == "todo":

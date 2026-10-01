@@ -54,6 +54,18 @@ variables, helper definitions persist across cells, and generated code can call
 visible methods and tools on `self`. The loop ends when a value validates
 against the return annotation.
 
+`CodeActConfig`, `SandboxConfig`, and `FileRule` reject unknown configuration
+keys instead of silently ignoring them. Construct validated configuration
+objects when changing settings: `model_copy(update=...)` does not validate
+updates. CodeAct rechecks copied configurations, including nested file grants,
+before execution setup; invalid copies raise `SandboxUnavailable`. This also
+applies to the in-process backend, so an unknown isolation option cannot silently
+become host execution. Valid in-process execution is still explicitly unisolated.
+The public Windows sandbox remains unavailable; Windows-specific policy fields
+are not aliases for the existing Linux sandbox settings. The separate
+[staged Windows interface](../windows-sandbox-policy.md#staged-public-windows-interface)
+allows policy validation but refuses session entry before native provisioning.
+
 ### Recovering from a text-only CodeAct turn
 
 CodeAct expects every model turn to call `execute_python` or `return_result`,

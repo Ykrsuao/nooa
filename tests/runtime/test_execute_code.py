@@ -263,3 +263,35 @@ async def test_sandbox_cancellation_is_reported_to_after_code_hook(test_agent) -
 
     assert len(exceptions) == 1
     assert isinstance(exceptions[0], asyncio.CancelledError)
+
+
+@pytest.mark.asyncio
+async def test_sandbox_imports_are_not_removed_using_parent_namespace(test_agent):
+    from nooa.events import ExecutionResult
+
+    received = []
+
+    class RecordingSandbox:
+        async def run_cell(self, code, *, execution_count=1):
+            received.append((code, execution_count))
+            return ExecutionResult(stdout="", defined_methods={})
+
+    code = "import asyncio\nprint(asyncio.__name__)"
+    result = await test_agent.runtime.execute_code(
+        code, sandbox_executor=RecordingSandbox(), execution_count=7
+    )
+    assert result.success
+    assert received == [(code, 7)]
+
+
+@pytest.mark.asyncio
+async def test_sandbox_imports_still_pass_through_restrictions(test_agent):
+    class NeverCalledSandbox:
+        async def run_cell(self, code, *, execution_count=1):
+            pytest.fail("blocked imports must not reach the worker")
+
+    result = await test_agent.runtime.execute_code(
+        "import subprocess", sandbox_executor=NeverCalledSandbox()
+    )
+    assert not result.success
+    assert "subprocess" in str(result.error)

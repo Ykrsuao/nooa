@@ -8,7 +8,8 @@ Two-tier approach:
 - **Hard limit**: thread-based kill at 100% — writes error result to stdout
   via ``os.write()`` and calls ``os._exit(137)``.  Also attempts
   ``resource.setrlimit(RLIMIT_AS)`` as a secondary safety net (Linux only;
-  macOS does not enforce it).
+  macOS does not enforce it). Windows uses current process working-set
+  samples and polling-based termination, not an OS-enforced memory cap.
 """
 
 from __future__ import annotations
@@ -16,7 +17,6 @@ from __future__ import annotations
 import gc
 import logging
 import platform
-import resource
 import sys
 import threading
 import time
@@ -24,6 +24,14 @@ import traceback
 import tracemalloc
 from datetime import UTC, datetime
 from pathlib import Path
+from types import ModuleType
+from typing import BinaryIO
+
+resource: ModuleType | None
+if sys.platform == "win32":
+    resource = None
+else:
+    import resource
 
 
 def enable_tracking() -> None:
@@ -32,21 +40,62 @@ def enable_tracking() -> None:
         tracemalloc.start(25)
 
 
+def _get_windows_rss_mb() -> float:
+    """Read the current working set using a non-owning process pseudo-handle."""
+    import ctypes
+    from ctypes import wintypes
+
+    class ProcessMemoryCounters(ctypes.Structure):
+        _fields_ = [
+            ("cb", wintypes.DWORD),
+            ("PageFaultCount", wintypes.DWORD),
+            ("PeakWorkingSetSize", ctypes.c_size_t),
+            ("WorkingSetSize", ctypes.c_size_t),
+            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+            ("PagefileUsage", ctypes.c_size_t),
+            ("PeakPagefileUsage", ctypes.c_size_t),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    current_process = kernel32.GetCurrentProcess
+    current_process.argtypes = []
+    current_process.restype = wintypes.HANDLE
+    memory_info = kernel32.K32GetProcessMemoryInfo
+    memory_info.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(ProcessMemoryCounters),
+        wintypes.DWORD,
+    ]
+    memory_info.restype = wintypes.BOOL
+    counters = ProcessMemoryCounters()
+    counters.cb = ctypes.sizeof(counters)
+    if not memory_info(current_process(), ctypes.byref(counters), counters.cb):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return counters.WorkingSetSize / (1024 * 1024)
+
+
 def get_rss_mb() -> float:
     """Return current RSS in MB.
 
     Uses ``/proc/self/status`` on Linux (accurate current RSS).
+    On Windows, reads the current process working set from the kernel.
     Falls back to ``resource.getrusage().ru_maxrss`` on macOS, which
     reports *peak* RSS — the value never decreases within a process.
     """
+    if platform.system() == "Windows":
+        return _get_windows_rss_mb()
     try:
-        with open("/proc/self/status") as f:
+        with open("/proc/self/status", encoding="utf-8") as f:
             for line in f:
                 if line.startswith("VmRSS:"):
                     return int(line.split()[1]) / 1024  # kB → MB
     except FileNotFoundError:
         pass
     # macOS: ru_maxrss is in bytes; Linux: kB
+    assert resource is not None
     usage = resource.getrusage(resource.RUSAGE_SELF)
     if platform.system() == "Darwin":
         return usage.ru_maxrss / (1024 * 1024)
@@ -56,7 +105,7 @@ def get_rss_mb() -> float:
 def _get_vas_mb() -> float:
     """Return current virtual address space size in MB."""
     try:
-        with open("/proc/self/status") as f:
+        with open("/proc/self/status", encoding="utf-8") as f:
             for line in f:
                 if line.startswith("VmSize:"):
                     return int(line.split()[1]) / 1024  # kB → MB
@@ -80,8 +129,11 @@ def set_hard_limit(limit_mb: int) -> bool:
 
     Returns True if the limit was set, False if it couldn't be applied
     (e.g. macOS where RLIMIT_AS is not enforced and the OS may reject the
-    value).
+    value, or Windows where resource is unavailable). Windows relies on
+    MemoryMonitor polling; this function does not install a Job Object cap.
     """
+    if resource is None:
+        return False
     current_vas = _get_vas_mb()
     vas_cap_bytes = int((current_vas + limit_mb) * 1024 * 1024)
     try:
@@ -98,7 +150,9 @@ def set_hard_limit(limit_mb: int) -> bool:
 
 
 def clear_hard_limit() -> None:
-    """Remove the RLIMIT_AS soft cap (reset to the hard ceiling)."""
+    """Remove the RLIMIT_AS soft cap; a no-op when resource is unavailable."""
+    if resource is None:
+        return
     try:
         _, hard = resource.getrlimit(resource.RLIMIT_AS)
         resource.setrlimit(resource.RLIMIT_AS, (hard, hard))
@@ -128,7 +182,7 @@ class MemoryMonitor:
         limit_mb: int,
         trace_dir: str,
         sample_id: str,
-        proto_out: object | None = None,
+        proto_out: BinaryIO | None = None,
         task_meta: dict | None = None,
         soft_pct: float = 0.85,
         poll_interval: float = 2.0,
@@ -292,7 +346,7 @@ class MemoryMonitor:
         # -- Write file --------------------------------------------------- #
         try:
             self.trace_dir.mkdir(parents=True, exist_ok=True)
-            diag_path.write_text("\n".join(lines))
+            diag_path.write_text("\n".join(lines), encoding="utf-8")
             self.diag_file = str(diag_path)
         except Exception:
             # Last resort: write to stderr
@@ -306,7 +360,7 @@ class MemoryMonitor:
         This appends a final note to the diagnostics file, flushes traces
         so the viewer has the full execution, writes an error result to
         stdout (so the parent gets a proper EvalTestResult), and terminates.
-        Works on all platforms (macOS, Linux) — no RLIMIT_AS dependency.
+        Works on Windows, macOS and Linux without an RLIMIT_AS dependency.
         """
         import os
 
@@ -319,7 +373,7 @@ class MemoryMonitor:
         # Append kill notice to diagnostics file
         if self.diag_file:
             try:
-                with open(self.diag_file, "a") as f:
+                with open(self.diag_file, "a", encoding="utf-8") as f:
                     f.write(
                         f"\n*** HARD KILL at {current_rss:.1f} MB (limit: {self.limit_mb} MB) ***\n"
                     )

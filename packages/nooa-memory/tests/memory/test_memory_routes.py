@@ -80,6 +80,7 @@ def memory_db(tmp_path):
     # Structured accesses on the referenced memory: one recall (with trace/session
     # refs + scoring), then a spontaneous injection with no deliberate use after.
     m = store.get("m-episode")
+    assert m is not None
     m.log_access(
         AccessRecord(
             ts=now,
@@ -347,14 +348,14 @@ def test_missing_db_is_404(client, tmp_path):
 
 def test_bad_suffix_is_422(client, tmp_path):
     txt = tmp_path / "notes.txt"
-    txt.write_text("hi")
+    txt.write_text("hi", encoding="utf-8")
     resp = client.get("/api/memory/records", params={"db": str(txt)})
     assert resp.status_code == 422
 
 
 def test_non_sqlite_file_is_422(client, tmp_path):
     fake = tmp_path / "fake.sqlite"
-    fake.write_text("this is not a sqlite database at all, padded to 16+ bytes")
+    fake.write_text("this is not a sqlite database at all, padded to 16+ bytes", encoding="utf-8")
     resp = client.get("/api/memory/records", params={"db": str(fake)})
     assert resp.status_code == 422
 

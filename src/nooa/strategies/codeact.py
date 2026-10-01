@@ -56,7 +56,7 @@ from nooa.events import (
 )
 from nooa.runtime.harness_metrics import get_harness_metrics
 from nooa.runtime.hooks import call_after_hook, call_before_hook
-from nooa.runtime.sandbox.errors import SandboxExecutionError
+from nooa.runtime.sandbox.errors import SandboxExecutionError, SandboxUnavailable
 from nooa.strategies.base import RuntimeServices, build_sampling_kwargs
 from nooa.strategies.codeact_errors import format_validation_error
 from nooa.strategies.composite import CompositeStrategy
@@ -874,6 +874,20 @@ Standard Python builtins and agent instance (`self`) are available."""
         Raises:
             GenerationError: If generation fails after max retries/iterations.
         """
+        # Copied configurations can bypass Pydantic's Literal validation.
+        if self.config.execution_backend not in ("inprocess", "sandbox"):
+            raise SandboxUnavailable(
+                "Unsupported CodeAct execution backend; choose 'inprocess' or 'sandbox'."
+            )
+        from nooa.config.strategy_config import CodeActConfig
+
+        try:
+            # Recheck copied configs, including nested grants, before any host setup.
+            CodeActConfig.model_validate(dict(self.config), strict=True)
+        except PydanticValidationError:
+            raise SandboxUnavailable(
+                "Invalid CodeAct configuration; reconstruct it with validated fields."
+            ) from None
         # Guarantee the sandbox worker is torn down on EVERY exit — including the
         # GenerationError paths inside the loop — not just the success returns.
         session_holder: dict[str, Any] = {}

@@ -103,7 +103,7 @@ class TestStatePersistence:
     async def test_cd_persists(self, session, tmp_path):
         sub = tmp_path / "sub"
         sub.mkdir()
-        await session.run(f"cd {sub}")
+        await session.run(f"cd {sub.as_posix()}")
         stdout, _stderr, _code = await session.run("pwd")
         assert stdout.endswith("sub")
         assert session.cwd == sub
@@ -150,7 +150,10 @@ class TestStreamingUsesTheSameFraming:
         sub = tmp_path / "streamed"
         sub.mkdir()
         chunks = [
-            c async for n, c in session.run_stream(f"cd {sub} && echo streamed", timeout=10.0)
+            c
+            async for n, c in session.run_stream(
+                f"cd {sub.as_posix()} && echo streamed", timeout=10.0
+            )
         ]
         assert "streamed" in "".join(chunks)
         assert session.cwd == sub

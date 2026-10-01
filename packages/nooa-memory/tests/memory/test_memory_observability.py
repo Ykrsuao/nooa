@@ -105,6 +105,7 @@ def test_recall_logs_rich_access(agent):
     mid = agent.remember("deploy uses make ship", type="info")
     agent.recall("how to deploy")
     got = mgr.store.get(mid)
+    assert got is not None
     entry = got.access_log[-1]
     assert entry.channel == "recalled"
     assert entry.query == "how to deploy"
@@ -118,6 +119,7 @@ def test_search_logs_searched_channel(agent):
     mid = agent.remember("rollback uses make undeploy", type="skill")
     agent.search("rollback")
     got = mgr.store.get(mid)
+    assert got is not None
     assert got.searched_count == 1
     assert got.access_log[-1].channel == "searched"
 
@@ -128,6 +130,7 @@ def test_injection_logged_and_persisted(agent):
     agent.event_manager.add(Task(prompt="deploy the service"))
     mgr._on_before_turn(None)
     got = mgr.store.get(mid)
+    assert got is not None
     assert got.injected_count == 1
     assert got.strength == 1  # injection never reinforces
     assert mgr.stats.injection_ms_total > 0
@@ -138,7 +141,9 @@ def test_injection_logging_can_be_disabled(agent):
     mid = agent.remember("deploy uses make ship", type="info")
     agent.event_manager.add(Task(prompt="deploy the service"))
     mgr._on_before_turn(None)
-    assert mgr.store.get(mid).injected_count == 0
+    got = mgr.store.get(mid)
+    assert got is not None
+    assert got.injected_count == 0
 
 
 def test_dedup_reinforce_logs_channel(agent):
@@ -146,6 +151,7 @@ def test_dedup_reinforce_logs_channel(agent):
     mid = agent.remember("identical fact about shipping", type="info")
     agent.remember("identical fact about shipping", type="info")
     got = mgr.store.get(mid)
+    assert got is not None
     assert got.reinforced_count == 1
     assert got.access_log[-1].channel == "reinforced"
 
@@ -162,11 +168,15 @@ def test_reflect_appends_maintenance_history(agent):
 def test_explain_returns_components_without_touching(agent):
     mgr = _install(agent)
     mid = agent.remember("deploy uses make ship", type="info")
-    before = mgr.store.get(mid).access_count
+    got = mgr.store.get(mid)
+    assert got is not None
+    before = got.access_count
     rows = mgr.explain("how to deploy")
     assert rows and rows[0]["id"] == mid
     assert {"rank", "score", "source", "cos", "rel", "rec", "imp", "spread"} <= set(rows[0])
-    assert mgr.store.get(mid).access_count == before  # dry run
+    got = mgr.store.get(mid)
+    assert got is not None
+    assert got.access_count == before  # dry run
 
 
 def test_stats_snapshot_counts_todos_and_refs(agent):
@@ -213,7 +223,9 @@ def test_bridge_emits_span_events(agent):
     # trace_ref lands on the access record while a span is active
     with tracer.start_as_current_span("second") as span2:
         res = agent.recall("traced write")
-    entry = mgr.store.get(res[0].id).access_log[-1]
+    got = mgr.store.get(res[0].id)
+    assert got is not None
+    entry = got.access_log[-1]
     assert entry.trace_ref == format(span2.get_span_context().span_id, "016x")
     del ot_trace  # imported to assert the module is available
 
@@ -225,7 +237,9 @@ def test_per_memory_usage_panel(agent):
     mgr = _install(agent)
     mid = agent.remember("deploy uses make ship", type="info")
     agent.recall("deploy")
-    usage = per_memory_usage(mgr.store.get(mid), forgetting=mgr.forgetting)
+    got = mgr.store.get(mid)
+    assert got is not None
+    usage = per_memory_usage(got, forgetting=mgr.forgetting)
     assert usage["fetches"] == 1 and usage["recalled"] == 1
     assert usage["last_channel"] == "recalled"
     assert usage["mean_rank"] == 0
@@ -267,6 +281,7 @@ def test_store_kpis_group_owners_by_role(agent):
 
     # same-role, different-instance reads are NOT cross-owner
     row = mgr.store.get(other.id)
+    assert row is not None
     row.log_access(AccessRecord(ts=_now(), channel="recalled", reader_owner="other@cccc3333"))
     row.log_access(AccessRecord(ts=_now(), channel="recalled", reader_owner="agentx@aaaa1111"))
     mgr.store.save(row)

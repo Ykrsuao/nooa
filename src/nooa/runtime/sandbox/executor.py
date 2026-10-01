@@ -17,10 +17,13 @@ import logging
 import multiprocessing as mp
 import os
 import signal
+import threading
 import time
-from multiprocessing.connection import Connection
+from multiprocessing.connection import _ConnectionBase as Connection
 from multiprocessing.process import BaseProcess
 from typing import Any
+
+from pydantic import ValidationError
 
 from nooa.errors.formatting import _hard_bound_text
 from nooa.events import ExecutionResult
@@ -41,7 +44,7 @@ from nooa.runtime.sandbox.serialization import (
     effective_error_limit,
     is_picklable,
 )
-from nooa.runtime.sandbox.worker import worker_main
+from nooa.runtime.sandbox.worker import _is_async_callable, worker_main
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +102,20 @@ class SandboxedExecutor:
         max_error: int | None = None,
         error_tail: int | None = None,
     ):
+        if not isinstance(config, SandboxConfig):
+            raise SandboxUnavailable("Invalid sandbox configuration; SandboxConfig is required.")
+        if config.start_method != "fork":
+            raise SandboxUnavailable(
+                "The public sandbox supports only the 'fork' multiprocessing start method; "
+                "spawn and LPAC are internal experiments, not selectable backends."
+            )
+        try:
+            # dict() retains unknown fields inserted by unvalidated model_copy().
+            config = SandboxConfig.model_validate(dict(config), strict=True)
+        except ValidationError:
+            raise SandboxUnavailable(
+                "Invalid sandbox configuration; reconstruct it with validated fields."
+            ) from None
         self._agent = agent
         self._config = config
         self._cell_timeout = cell_timeout
@@ -108,6 +125,36 @@ class SandboxedExecutor:
         self._error_tail = error_tail
         self._spec: ResolvedSpec = resolve_spec(config)
         self._codec = wire.Codec(wire.agent_types(agent))
+        self._ctx: Any
+        self._prepare_backend()
+        self._proc: BaseProcess | None = None
+        self._conn: Connection | None = None
+        self._lock = asyncio.Lock()
+        self._req_id = 0
+        self._closed = False
+        self._disabled = False  # set when recovery="disabled" after a kill
+
+        # A typo'd/missing workspace would otherwise become a silently unwritable
+        # sandbox; create it up front (it's the parent's own filesystem).
+        if config.filesystem and config.workspace:
+            try:
+                os.makedirs(config.workspace, exist_ok=True)
+            except OSError as exc:
+                raise SandboxUnavailable(
+                    f"sandbox workspace {config.workspace!r} could not be created: {exc}"
+                ) from exc
+
+    def _prepare_backend(self) -> None:
+        """Validate the public sandbox policy before selecting its worker."""
+        config = self._config
+        # Not a guardrail that require=False could drop: without this start
+        # method there is no worker at all.
+        if config.start_method not in mp.get_all_start_methods():
+            raise SandboxUnavailable(
+                f"The sandbox worker needs the {config.start_method!r} multiprocessing start "
+                "method, which this platform does not provide (Windows has no fork). Use "
+                'execution_backend="inprocess" (the default) instead.'
+            )
 
         caps = _capabilities()
         missing = check_enforceable(config, caps)
@@ -130,22 +177,6 @@ class SandboxedExecutor:
             )
 
         self._ctx = mp.get_context(config.start_method)
-        self._proc: BaseProcess | None = None
-        self._conn: Connection | None = None
-        self._lock = asyncio.Lock()
-        self._req_id = 0
-        self._closed = False
-        self._disabled = False  # set when recovery="disabled" after a kill
-
-        # A typo'd/missing workspace would otherwise become a silently unwritable
-        # sandbox; create it up front (it's the parent's own filesystem).
-        if config.filesystem and config.workspace:
-            try:
-                os.makedirs(config.workspace, exist_ok=True)
-            except OSError as exc:
-                raise SandboxUnavailable(
-                    f"sandbox workspace {config.workspace!r} could not be created: {exc}"
-                ) from exc
 
     @staticmethod
     def _prune_unenforceable(spec: ResolvedSpec, caps: Capabilities) -> ResolvedSpec:
@@ -301,7 +332,16 @@ class SandboxedExecutor:
             return dto_to_result(dto, signal_factory=self._signal_factory, codec=self._codec)
 
     def _recv_until_result(
-        self, req_id: int, deadline: float | None, loop: asyncio.AbstractEventLoop
+        self,
+        req_id: int,
+        deadline: float | None,
+        loop: asyncio.AbstractEventLoop,
+        *,
+        conn: Connection | None = None,
+        proc: BaseProcess | None = None,
+        stop: threading.Event | None = None,
+        max_message_bytes: int | None = None,
+        strict_messages: bool = False,
     ) -> dict[str, Any]:
         """Block (in a thread) until the worker answers, servicing broker calls.
 
@@ -311,8 +351,11 @@ class SandboxedExecutor:
         """
         end = time.monotonic() + deadline if deadline else None
         poll = self._config.rss_poll_s if self._config.rss_poll_s > 0 else 0.1
+        conn = conn if conn is not None else self._conn
+        proc = proc if proc is not None else self._proc
         while True:
-            conn = self._conn
+            if stop is not None and stop.is_set():
+                raise WorkerDiedError("sandbox cell was cancelled")
             if conn is None:
                 raise WorkerDiedError("sandbox worker connection lost")
             if end is not None:
@@ -324,12 +367,20 @@ class SandboxedExecutor:
                 wait = min(remaining, poll)
             else:
                 wait = poll
-            if not conn.poll(max(0.01, wait)):
-                if self._proc is None or not self._proc.is_alive():
+            try:
+                readable = conn.poll(max(0.01, wait))
+            except (OSError, ValueError) as exc:
+                raise WorkerDiedError("sandbox worker pipe closed") from exc
+            if not readable:
+                if proc is None or not proc.is_alive():
                     raise WorkerDiedError("sandbox worker exited unexpectedly")
                 continue
             try:
-                raw = conn.recv_bytes()
+                raw = (
+                    conn.recv_bytes()
+                    if max_message_bytes is None
+                    else conn.recv_bytes(maxlength=max_message_bytes)
+                )
             except (EOFError, OSError) as exc:
                 raise WorkerDiedError("sandbox worker pipe closed") from exc
             # Never ``conn.recv()`` here: that would unpickle worker bytes.
@@ -347,7 +398,7 @@ class SandboxedExecutor:
                 # call: the worker is idle-waiting, not running cell code, so
                 # this time must not count against the cell deadline.
                 broker_started = time.monotonic()
-                self._service_tool_call(msg, loop)
+                self._service_tool_call(msg, loop, conn=conn, stop=stop)
                 if end is not None:
                     end += time.monotonic() - broker_started
                 continue
@@ -355,8 +406,17 @@ class SandboxedExecutor:
                 raise WorkerDiedError(f"sandbox worker fatal: {msg.get('error')}")
             if mtype == "response" and msg.get("id") == req_id:
                 return msg
+            if strict_messages:
+                raise WorkerDiedError("sandbox worker sent an unexpected message")
 
-    def _service_tool_call(self, msg: dict[str, Any], loop: asyncio.AbstractEventLoop) -> None:
+    def _service_tool_call(
+        self,
+        msg: dict[str, Any],
+        loop: asyncio.AbstractEventLoop,
+        *,
+        conn: Connection | None = None,
+        stop: threading.Event | None = None,
+    ) -> None:
         try:
             call = self._decode_tool_call(msg)
         except CellSerializationError as exc:
@@ -375,7 +435,25 @@ class SandboxedExecutor:
             # calls) wiped REPL state and swallowed queued submits in the ARC fleet.
             broker_timeout = self._config.broker_timeout_s or None
             try:
-                response = future.result(timeout=broker_timeout)
+                if stop is None:
+                    response = future.result(timeout=broker_timeout)
+                else:
+                    end = time.monotonic() + broker_timeout if broker_timeout else None
+                    while True:
+                        if stop.is_set():
+                            future.cancel()
+                            raise WorkerDiedError("sandbox broker call was cancelled")
+                        remaining = end - time.monotonic() if end is not None else None
+                        if remaining is not None and remaining <= 0:
+                            raise futures.TimeoutError
+                        try:
+                            response = future.result(
+                                timeout=min(0.05, remaining) if remaining is not None else 0.05
+                            )
+                            break
+                        except futures.TimeoutError:
+                            if future.done():
+                                raise
             except futures.TimeoutError:
                 future.cancel()
                 raise CellTimeoutError(
@@ -383,7 +461,7 @@ class SandboxedExecutor:
                 ) from None
         response["type"] = "tool_result"
         response["tool_call_id"] = msg.get("tool_call_id")
-        conn = self._conn
+        conn = conn if conn is not None else self._conn
         if conn is not None:
             try:
                 conn.send(response)
@@ -403,7 +481,10 @@ class SandboxedExecutor:
             raise CellSerializationError(f"malformed sandbox broker request: kind {kind!r}")
         if not isinstance(path, list) or not all(isinstance(p, str) for p in path):
             raise CellSerializationError("malformed sandbox broker request: bad path")
-        call: dict[str, Any] = {"kind": kind, "path": path}
+        root = msg.get("root", "agent")
+        if not isinstance(root, str) or root not in self._broker_roots():
+            raise CellSerializationError("malformed sandbox broker request: bad root")
+        call: dict[str, Any] = {"kind": kind, "path": path, "root": root}
         if kind not in ("call", "setattr"):
             return call
         what = f"self.{'.'.join(path)}" + ("" if kind == "setattr" else "(...)")
@@ -429,9 +510,15 @@ class SandboxedExecutor:
             raise CellSerializationError(f"malformed sandbox broker request for {what}")
         return call
 
-    def _walk_path(self, path: list[str]) -> Any:
+    def _broker_roots(self) -> dict[str, Any]:
+        return {"agent": self._agent}
+
+    def _attribute_is_value(self, target: Any) -> bool:
+        return is_picklable(target)
+
+    def _walk_path(self, path: list[str], root: str = "agent") -> Any:
         """Resolve a dotted attribute path (``["memory", "remember"]``) on the agent."""
-        obj: Any = self._agent
+        obj: Any = self._broker_roots()[root]
         for part in path:
             obj = getattr(obj, part)
         return obj
@@ -441,18 +528,19 @@ class SandboxedExecutor:
         from nooa.events import ExecutionSignal
 
         path = msg.get("path") or []
+        root = msg.get("root", "agent")
         display = ".".join(path)
         kind = msg.get("kind")
         target: Any = None
         try:
             if kind == "setattr":
                 # self.<path> = value on the parent's live agent.
-                obj = self._walk_path(path[:-1])
+                obj = self._walk_path(path[:-1], root)
                 setattr(obj, path[-1], msg.get("value"))
                 return {"ok": True, "result": None}
             if kind == "iter":
                 # Materialize list(obj) on the parent (the iterator isn't picklable).
-                items = list(self._walk_path(path))
+                items = list(self._walk_path(path, root))
                 if not is_picklable(items):
                     return {
                         "ok": False,
@@ -463,10 +551,19 @@ class SandboxedExecutor:
                         ),
                     }
                 return {"ok": True, "result": items}
-            target = self._walk_path(path)
+            target = self._walk_path(path, root)
             if kind == "attr":
+                # Never ship a bound callable: pickle may copy its owning agent,
+                # and the child would run the tool against that stale copy.
+                if callable(target) and not isinstance(target, type):
+                    return {
+                        "ok": True,
+                        "result": None,
+                        "callable": True,
+                        "is_async": _is_async_callable(target),
+                    }
                 # Picklable state crosses; a live object becomes a nested proxy.
-                if is_picklable(target):
+                if self._attribute_is_value(target):
                     return {"ok": True, "result": target}
                 return {"ok": True, "result": None, "proxy": True}
             value = target(*msg.get("args", ()), **msg.get("kwargs", {}))
@@ -528,9 +625,11 @@ class SandboxedExecutor:
     def _classify_worker_death(self, exc: WorkerDiedError) -> Exception:
         proc = self._proc
         code = getattr(proc, "exitcode", None)
-        if code == -signal.SIGXCPU:
+        sigxcpu = getattr(signal, "SIGXCPU", None)
+        sigkill = getattr(signal, "SIGKILL", None)
+        if sigxcpu is not None and code == -sigxcpu:
             return CellTimeoutError("cell exceeded its CPU-time limit and was killed")
-        if code == -signal.SIGKILL:
+        if sigkill is not None and code == -sigkill:
             return CellMemoryError(
                 "worker was killed (out-of-memory or resource limit). "
                 "Reduce the cell's memory use or raise max_memory_mb."

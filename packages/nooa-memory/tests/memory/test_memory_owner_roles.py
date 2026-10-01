@@ -69,7 +69,9 @@ def test_owner_validation():
 def test_instances_share_knowledge_and_curation(shared_path):
     a1_agent, a1 = _mgr(shared_path, "agentx@aaaa1111")
     mid = a1_agent.remember("the deploy command is make ship", type="skill")
-    assert a1.store.get(mid).owner == "agentx@aaaa1111"  # full-tag write provenance
+    got = a1.store.get(mid)
+    assert got is not None
+    assert got.owner == "agentx@aaaa1111"  # full-tag write provenance
 
     a2_agent, a2 = _mgr(shared_path, "agentx@bbbb2222")
     # default recall: role scope -> yesterday's knowledge is visible
@@ -121,8 +123,10 @@ def test_dedup_reinforces_across_instances(shared_path):
     a2_agent, _ = _mgr(shared_path, "agentx@bbbb2222")
     mid2 = a2_agent.remember("identical fact about shipping releases", type="info")
     assert mid1 == mid2  # same role: reinforced, not duplicated
-    assert a1.store.get(mid1).reinforcement_count == 1
-    assert a1.store.get(mid1).owner == "agentx@aaaa1111"  # original writer kept
+    got = a1.store.get(mid1)
+    assert got is not None
+    assert got.reinforcement_count == 1
+    assert got.owner == "agentx@aaaa1111"  # original writer kept
 
 
 def test_spread_confined_to_role(shared_path):

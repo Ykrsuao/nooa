@@ -194,7 +194,7 @@ class TestBasicTurn:
         """
         exporter.on_task(Task(prompt="hi"))
         _drive_basic_codeact_turn(exporter)
-        loaded = Trajectory.model_validate_json(exporter.path.read_text())
+        loaded = Trajectory.model_validate_json(exporter.path.read_text(encoding="utf-8"))
         assert loaded.agent.name == "test-agent"
         # No leftover .tmp file.
         assert not (tmp_path / "trajectory.json.tmp").exists()
@@ -468,7 +468,7 @@ class TestCrashSafety:
         # Pretend the agent_call raised mid-turn — finalize hook fires.
         exporter.finalize_on_exception(RuntimeError("boom"))
 
-        loaded = Trajectory.model_validate_json(exporter.path.read_text())
+        loaded = Trajectory.model_validate_json(exporter.path.read_text(encoding="utf-8"))
         assert loaded.extra is not None
         assert loaded.extra["crashed"] is True
         assert loaded.extra["exception_type"] == "RuntimeError"
@@ -490,7 +490,7 @@ class TestCrashSafety:
             )
         )
         # No AfterTurn yet — the system + user steps are on disk; the pending agent step is not.
-        loaded = Trajectory.model_validate_json(exporter.path.read_text())
+        loaded = Trajectory.model_validate_json(exporter.path.read_text(encoding="utf-8"))
         assert [s.source for s in loaded.steps] == ["system", "user"]
 
 

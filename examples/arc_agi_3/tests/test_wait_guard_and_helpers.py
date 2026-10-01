@@ -58,7 +58,7 @@ def _build_agent(tmp_path, scripted_responses):
         skill_path=None,
     )
     state = dict(STATE, grid_rows=["0" * 64] * 64)
-    agent._states_path.write_text(json.dumps(state) + "\n")
+    agent._states_path.write_text(json.dumps(state) + "\n", encoding="utf-8")
     return agent, llm, state
 
 
@@ -84,7 +84,9 @@ async def test_wait_via_direct_tool_call_without_submission_is_rejected(tmp_path
 
     await agent.handle({"game_states": [json.dumps(state)]})
 
-    entries = [json.loads(x) for x in agent._actions_path.read_text().splitlines() if x]
+    entries = [
+        json.loads(x) for x in agent._actions_path.read_text(encoding="utf-8").splitlines() if x
+    ]
     assert len(entries) == 1, "the WAIT lie was accepted — no submission ever reached the harness"
     assert entries[0]["actions"] == ["UP", "DOWN", "UP"]
     assert llm.call_count == 2  # bounce + real submit, all within the same turn
@@ -103,7 +105,9 @@ async def test_wait_via_inline_return_result_without_submission_is_rejected(tmp_
 
     await agent.handle({"game_states": [json.dumps(state)]})
 
-    entries = [json.loads(x) for x in agent._actions_path.read_text().splitlines() if x]
+    entries = [
+        json.loads(x) for x in agent._actions_path.read_text(encoding="utf-8").splitlines() if x
+    ]
     assert len(entries) == 1, "the inline WAIT lie was accepted — nothing was submitted"
     assert llm.call_count == 2
 
@@ -115,7 +119,9 @@ async def test_legitimate_wait_from_submit_actions_still_passes(tmp_path):
 
     result = await agent.handle({"game_states": [json.dumps(state)]})
 
-    entries = [json.loads(x) for x in agent._actions_path.read_text().splitlines() if x]
+    entries = [
+        json.loads(x) for x in agent._actions_path.read_text(encoding="utf-8").splitlines() if x
+    ]
     assert len(entries) == 1
     assert llm.call_count == 1  # no bounce for a backed WAIT
     assert isinstance(result, sa.Waiting)

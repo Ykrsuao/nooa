@@ -210,7 +210,7 @@ class ViewerEventExporter(SpanExporter):
         if not self.events_path.exists():
             return cur
         try:
-            for line in self.events_path.read_text().splitlines():
+            for line in self.events_path.read_text(encoding="utf-8").splitlines():
                 e = json.loads(line)
                 if e.get("event") == "env_step":
                     t = float(e.get("unix_time_s", 0))
@@ -271,7 +271,7 @@ class ViewerEventExporter(SpanExporter):
             # Append in monotonic time order (stable: preserves insertion for ties).
             pending.sort(key=lambda x: x[0])
             if pending:
-                with self.events_path.open("a") as f:
+                with self.events_path.open("a", encoding="utf-8") as f:
                     for _, line in pending:
                         f.write(json.dumps(line) + "\n")
         except Exception:  # never raise out of export()

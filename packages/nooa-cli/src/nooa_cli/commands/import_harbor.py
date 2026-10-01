@@ -51,7 +51,7 @@ def _find_harbor_traces(root: Path) -> list[Path]:
 def _read_json(path: Path) -> dict:
     """Read a JSON file, returning an empty dict on any failure."""
     try:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
 
@@ -94,7 +94,7 @@ def _read_score(trial_dir: Path, trial_result: dict) -> float | None:
 
     reward_txt = trial_dir / "verifier" / "reward.txt"
     if reward_txt.exists():
-        return _coerce_float(reward_txt.read_text().strip())
+        return _coerce_float(reward_txt.read_text(encoding="utf-8").strip())
 
     return None
 
@@ -341,7 +341,7 @@ def _import_trace_file(
         batch = []
         batch_input_bytes = 0
 
-    with open(jsonl_path) as f:
+    with open(jsonl_path, encoding="utf-8") as f:
         for raw_line in f:
             raw_line = raw_line.strip()
             if not raw_line:

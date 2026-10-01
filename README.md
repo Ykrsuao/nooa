@@ -129,6 +129,82 @@ uv add "nooa @ git+https://github.com/NVIDIA-NeMo/labs-OO-Agents.git@v0.0.7"
 
 </details>
 
+<details>
+<summary><b>Windows</b> — native support and current limits</summary>
+
+<br />
+
+NOOA runs on native Windows (no WSL) with the regular Windows build of Python.
+Agents, Predict and CodeAct generation, the LLM layer, SQLite event storage, tracing, and
+the trace viewer all work, and so does `uv sync` from source. UTF-8 mode
+(`PYTHONUTF8=1`) is not required: NOOA reads and writes its files as UTF-8 whatever the
+system code page is.
+
+`ShellTools` and the bash sessions behind the `nooa-cli` coding agent and the `nooa-acp`
+shell tools run in the bash that ships with
+[Git for Windows](https://git-scm.com/download/win), which NOOA finds through `git` on
+`PATH` or the standard install locations. To use another MSYS2 bash, set `NOOA_BASH` to
+its `bash.exe`. `C:\Windows\System32\bash.exe` is never used: it is the WSL launcher, and
+its commands would run inside a Linux VM with a different filesystem. The session tracks
+the working directory in Windows form (`C:/src`). Python subprocess streams default to
+UTF-8 inside the shell (an explicit `PYTHONIOENCODING` is preserved), including when the
+Windows system code page is GBK. A command that times out is stopped by
+terminating the processes it started. A long-running bash builtin such as a `while true`
+loop has no child process to stop, so the session is restarted in the same working
+directory instead, and shell state like variables and functions is lost.
+Cancelling a command or closing its output stream before completion also stops the
+session's process tree. The next command starts a fresh shell in the last reported
+working directory. Explicitly close `ShellTools`/`BashSession` when finished, before
+closing the event loop; recovery from an already-closed Windows loop releases its
+old pipes and process handles as well.
+
+Use the CLI to diagnose the local environment before starting an agent:
+
+```powershell
+uv run nooa doctor
+uv run nooa doctor --smoke
+uv run nooa doctor --json --port 5002
+```
+
+The default checks are read-only and do not load credentials. `--smoke` runs
+Unicode file/command, cancellation, recovery, and cleanup checks in a temporary
+workspace. Missing optional dependencies and the Windows sandbox limitation are
+warnings; blocking errors return exit status 1. See the
+[CLI diagnostics documentation](packages/nooa-cli/README.md#environment-diagnostics)
+for checks, exit codes, and JSON output.
+
+Not yet available on Windows:
+
+- **The public OS-level sandbox backend.** Its worker relies on `fork`, so
+  `CodeActConfig(execution_backend="sandbox")` raises `SandboxUnavailable`. The default
+  in-process backend is unaffected.
+- **The `SIGUSR2` debug dump.** Windows has no `SIGUSR2`; call
+  `nooa.runtime.debug_handler.dump_debug_info()` instead.
+- **Secret file permissions.** Unix permission bits (`0o600`) are not enforced. Secrets
+  saved under your user profile are protected by its default ACL instead.
+
+The shared Windows Job Object module provides optional process-tree memory,
+CPU-time, and process-count limits. An internal spawn/IPC runner now exercises
+parent-side tools, typed cells, cancellation and worker cleanup with these jobs.
+Those runners alone provide no file, network or parent-process isolation. A separate
+internal LPAC launcher now runs a private standard-library Python with read-only input
+snapshots, a writable disposable workspace, and negative tests for file, network,
+parent-handle and child-process access. An internal persistent LPAC worker now
+stages core framework dependencies and reuses the cell loop with explicitly granted
+parent callbacks. Its private asyncio runtime supports tasks, timers and thread
+wakeups, not asynchronous descriptor I/O. An internal CodeAct strategy now connects
+real Agent calls using explicitly staged Python modules, declared data types and
+granted method names. Explicit installed application dependencies (including tested
+native extensions) and parent-side tool argument predicates are supported internally.
+Named exact-file handles and fixed-URL HTTPS brokers are available internally.
+Broader dependency compatibility, directory and general HTTP policies, live host
+directory grants and public sandbox configuration remain incomplete; this strategy
+is not selectable as the public Windows sandbox.
+See the
+[Windows sandbox status and next steps](docs/windows-sandbox.md).
+
+</details>
+
 ## Quick Start
 
 ### ⚠️ Before Starting: safety note

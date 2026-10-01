@@ -61,7 +61,7 @@ def test_default_cap_truncates_oversized_batch_and_warns(tmp_path):
     fake = _fake_agent(tmp_path, STATE)
     with pytest.raises(_ReturnResultSignal) as excinfo:
         sa.ArcSolverBase.submit_actions(fake, BIG_BATCH, "r")
-    entry = json.loads((tmp_path / "actions.jsonl").read_text().strip())
+    entry = json.loads((tmp_path / "actions.jsonl").read_text(encoding="utf-8").strip())
     assert entry["actions"] == BIG_BATCH[:20]  # first 20 submitted, in order
     assert entry["truncated_from"] == len(BIG_BATCH)  # harness relays this as a state note
     explanation = excinfo.value.result["result"].explanation
@@ -73,7 +73,7 @@ def test_cap_zero_accepts_oversized_batch(tmp_path):
     fake = _fake_agent(tmp_path, STATE, cap=0)
     with pytest.raises(_ReturnResultSignal):
         sa.ArcSolverBase.submit_actions(fake, BIG_BATCH, "r")
-    entry = json.loads((tmp_path / "actions.jsonl").read_text().strip())
+    entry = json.loads((tmp_path / "actions.jsonl").read_text(encoding="utf-8").strip())
     assert len(entry["actions"]) == len(BIG_BATCH)
     assert "truncated_from" not in entry
 
@@ -82,13 +82,15 @@ def test_custom_cap_is_respected(tmp_path):
     fake = _fake_agent(tmp_path, STATE, cap=30)
     with pytest.raises(_ReturnResultSignal):
         sa.ArcSolverBase.submit_actions(fake, BIG_BATCH, "r")
-    entry = json.loads((tmp_path / "actions.jsonl").read_text().strip())
+    entry = json.loads((tmp_path / "actions.jsonl").read_text(encoding="utf-8").strip())
     assert len(entry["actions"]) == len(BIG_BATCH)  # 26 <= 30: untouched
 
     fake2 = _fake_agent(tmp_path, STATE, cap=25)
     with pytest.raises(_ReturnResultSignal):
         sa.ArcSolverBase.submit_actions(fake2, BIG_BATCH, "r")
-    entry2 = json.loads((tmp_path / "actions.jsonl").read_text().strip().splitlines()[-1])
+    entry2 = json.loads(
+        (tmp_path / "actions.jsonl").read_text(encoding="utf-8").strip().splitlines()[-1]
+    )
     assert entry2["actions"] == BIG_BATCH[:25]
     assert entry2["truncated_from"] == len(BIG_BATCH)
 
@@ -100,7 +102,9 @@ def test_invalid_action_anywhere_still_rejects_whole_batch(tmp_path):
     batch = BIG_BATCH[:22] + ["FLY"]  # invalid action beyond the cap boundary
     out = sa.ArcSolverBase.submit_actions(fake, batch, "r")
     assert isinstance(out, str) and out.startswith("REJECTED")
-    assert (tmp_path / "actions.jsonl").read_text().strip() == ""  # nothing submitted
+    assert (tmp_path / "actions.jsonl").read_text(
+        encoding="utf-8"
+    ).strip() == ""  # nothing submitted
 
 
 def test_cap_zero_keeps_other_validation(tmp_path):
@@ -167,7 +171,7 @@ def _build_agent(tmp_path, *, cap: int, scripted_cells: list[str]):
         max_actions_per_turn=cap,
     )
     state = dict(STATE, grid_rows=["0" * 64] * 64)
-    agent._states_path.write_text(json.dumps(state) + "\n")
+    agent._states_path.write_text(json.dumps(state) + "\n", encoding="utf-8")
     return agent, llm, state
 
 
@@ -179,7 +183,11 @@ async def test_fake_llm_submits_26_actions_with_no_cap(tmp_path):
 
     result = await agent.handle({"game_states": [json.dumps(state)]})
 
-    entries = [json.loads(line) for line in agent._actions_path.read_text().splitlines() if line]
+    entries = [
+        json.loads(line)
+        for line in agent._actions_path.read_text(encoding="utf-8").splitlines()
+        if line
+    ]
     assert len(entries) == 1
     assert entries[0]["actions"] == BIG_BATCH  # all 26, uncapped, in order
     assert entries[0]["turn"] == 0
@@ -198,7 +206,11 @@ async def test_fake_llm_oversized_batch_executes_first_20_with_warning(tmp_path)
 
     await agent.handle({"game_states": [json.dumps(state)]})
 
-    entries = [json.loads(line) for line in agent._actions_path.read_text().splitlines() if line]
+    entries = [
+        json.loads(line)
+        for line in agent._actions_path.read_text(encoding="utf-8").splitlines()
+        if line
+    ]
     assert len(entries) == 1
     assert entries[0]["actions"] == BIG_BATCH[:20]  # useful prefix plays this turn
     assert entries[0]["truncated_from"] == len(BIG_BATCH)

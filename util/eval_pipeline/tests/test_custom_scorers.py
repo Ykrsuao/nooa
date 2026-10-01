@@ -21,7 +21,7 @@ class TestMetadataFlow:
     def test_build_scoring_context_passes_metadata(self, tmp_path):
         """Metadata dict is forwarded into ScoringContext."""
         trace_file = tmp_path / "trace.jsonl"
-        trace_file.write_text("")
+        trace_file.write_text("", encoding="utf-8")
 
         metadata = {"difficulty": "hard", "rubric": "Check billing category"}
 
@@ -43,7 +43,7 @@ class TestMetadataFlow:
     def test_build_scoring_context_none_metadata_becomes_empty_dict(self, tmp_path):
         """Explicitly passing metadata=None normalizes to {}."""
         trace_file = tmp_path / "trace.jsonl"
-        trace_file.write_text("")
+        trace_file.write_text("", encoding="utf-8")
 
         result = ExecutionResult(
             task_id="t_none",
@@ -60,7 +60,7 @@ class TestMetadataFlow:
     def test_build_scoring_context_defaults_to_empty_metadata(self, tmp_path):
         """When no metadata is passed, ScoringContext.metadata defaults to {}."""
         trace_file = tmp_path / "trace.jsonl"
-        trace_file.write_text("")
+        trace_file.write_text("", encoding="utf-8")
 
         result = ExecutionResult(
             task_id="t2",
@@ -144,7 +144,7 @@ class TestDynamicScorerImport:
         # Create a scorer module on disk
         scorer_pkg = tmp_path / "my_scorers"
         scorer_pkg.mkdir()
-        (scorer_pkg / "__init__.py").write_text("")
+        (scorer_pkg / "__init__.py").write_text("", encoding="utf-8")
         (scorer_pkg / "basic.py").write_text(
             textwrap.dedent("""\
             from eval_pipeline.models import ScoreResult, ScoringContext
@@ -152,7 +152,8 @@ class TestDynamicScorerImport:
             class AlwaysPassScorer:
                 def score(self, ctx: ScoringContext) -> ScoreResult:
                     return ScoreResult(score=1.0, reasoning="always pass")
-        """)
+        """),
+            encoding="utf-8",
         )
 
         sys.path.insert(0, str(tmp_path))
@@ -189,7 +190,7 @@ class TestDynamicScorerImport:
         """Extra YAML keys are forwarded as kwargs to the custom scorer."""
         scorer_pkg = tmp_path / "my_scorers2"
         scorer_pkg.mkdir()
-        (scorer_pkg / "__init__.py").write_text("")
+        (scorer_pkg / "__init__.py").write_text("", encoding="utf-8")
         (scorer_pkg / "configurable.py").write_text(
             textwrap.dedent("""\
             from eval_pipeline.models import ScoreResult, ScoringContext
@@ -205,7 +206,8 @@ class TestDynamicScorerImport:
                         score=1.0 if match else 0.0,
                         reasoning=f"threshold={self.threshold}",
                     )
-        """)
+        """),
+            encoding="utf-8",
         )
 
         sys.path.insert(0, str(tmp_path))
@@ -265,7 +267,7 @@ class TestDynamicScorerImport:
         """Extra kwargs not accepted by the scorer constructor raise TypeError."""
         scorer_pkg = tmp_path / "my_scorers3"
         scorer_pkg.mkdir()
-        (scorer_pkg / "__init__.py").write_text("")
+        (scorer_pkg / "__init__.py").write_text("", encoding="utf-8")
         (scorer_pkg / "strict.py").write_text(
             textwrap.dedent("""\
             class StrictScorer:
@@ -273,7 +275,8 @@ class TestDynamicScorerImport:
                     pass
                 def score(self, ctx):
                     return {"score": 1.0, "reasoning": "ok"}
-        """)
+        """),
+            encoding="utf-8",
         )
 
         sys.path.insert(0, str(tmp_path))

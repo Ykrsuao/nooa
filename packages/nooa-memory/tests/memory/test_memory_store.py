@@ -242,6 +242,26 @@ def test_store_serializes_connection_and_index_access(store, emb):
     store.delete(m.id)
 
 
+@pytest.mark.parametrize("persisted", [False, True])
+def test_maintenance_history_is_newest_first_when_timestamps_tie(tmp_path, monkeypatch, persisted):
+    monkeypatch.setattr("nooa_memory.schema._now", lambda: 1000.0)
+    path = tmp_path / "memory.sqlite" if persisted else ":memory:"
+    store = MemoryStore(path)
+    try:
+        store.log_maintenance("first", {"sequence": 1})
+        store.log_maintenance("second", {"sequence": 2})
+        store.log_maintenance("third", {"sequence": 3})
+        if persisted:
+            store.close()
+            store = MemoryStore(path)
+        history = store.maintenance_history(limit=2)
+        assert [row["kind"] for row in history] == ["third", "second"]
+        assert [row["report"]["sequence"] for row in history] == [3, 2]
+        assert all(row["ts"] == 1000.0 for row in history)
+    finally:
+        store.close()
+
+
 def test_store_survives_foreground_and_reflection_thread_overlap(tmp_path, emb):
     path = tmp_path / "memory.sqlite"
     store = MemoryStore(path)

@@ -17,6 +17,7 @@ uv add "nooa-cli[datascience]"
 
 ```bash
 nooa --help
+nooa doctor          # inspect the local environment without loading credentials
 nooa start-dev        # launch the trace viewer
 nooa eval ...         # eval pipeline runner
 nooa traces ...       # inspect/manage trace files
@@ -33,6 +34,46 @@ uv run nooa-acp
 ```
 
 See the main repo [README](https://github.com/NVIDIA-NeMo/labs-OO-Agents/blob/main/README.md) for the framework documentation.
+
+## Environment diagnostics
+
+```powershell
+uv run nooa doctor
+uv run nooa doctor --smoke
+uv run nooa doctor --json --workspace "C:\src\my project" --port 5002
+```
+
+`doctor` checks Python 3.12/3.13, the Bash executable selected by the runtime,
+Git/ripgrep on `PATH`, optional viewer package metadata, workspace/configuration
+path permissions, and availability of the viewer's loopback port. On Windows it
+uses Git for Windows/MSYS2 discovery and rejects WSL launcher overrides.
+`--workspace` selects the directory used for relative path checks. Project/user
+directory and trace database overrides follow the runtime's normal environment
+variables.
+
+Default checks do not launch shell commands, load secrets/settings, change
+configuration, or contact model providers. Permission results are estimates
+(especially for Windows ACLs), not proof that an actual write will succeed.
+The port probe briefly binds a local socket without starting a server.
+
+`--smoke` opts into a real shell check in a disposable directory containing
+Chinese characters and spaces. It verifies UTF-8 file/command output, cancellation
+of a running command, recovery in the same shell-tool instance, and process
+cleanup. Temporary files are removed on normal completion or handled failure.
+The worker does not inherit API keys or shell startup hooks. Explicit
+`PYTHONIOENCODING` overrides are preserved so encoding problems remain visible.
+
+The exit status is **0** when no blocking errors were found, **1** for diagnostic
+errors (including smoke failures), and **2** for invalid command options.
+Missing optional viewer packages, Git/ripgrep, occupied ports, and the unavailable
+Windows sandbox are warnings, not blocking errors. Every warning/error includes
+repair advice where applicable. A successful doctor report is not a security
+or sandbox certification.
+
+`--json` emits one JSON object with `schema_version: 1`, `ok`, interpreter/platform
+information, and a `checks` array. Each check contains `id`, `status` (`ok`,
+`warning`, `error`, or `skipped`), `message`, and `fix`. JSON uses ASCII escapes
+so redirected output stays valid under Windows code pages.
 
 ## Interactive coding sessions
 

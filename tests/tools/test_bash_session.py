@@ -4,7 +4,7 @@
 
 import pytest
 
-from nooa.tools._bash_session import BashSession
+from nooa.tools._bash_session import PWD_COMMAND, BashSession
 
 
 @pytest.fixture
@@ -35,16 +35,16 @@ class TestBashSession:
         subdir = tmp_path / "subdir"
         subdir.mkdir()
 
-        await session.run(f"cd {subdir}")
-        out, _, _ = await session.run("pwd")
-        assert str(subdir) in out
+        await session.run(f"cd {subdir.as_posix()}")
+        out, _, _ = await session.run(PWD_COMMAND)
+        assert subdir.as_posix() in out
 
     async def test_cwd_tracking(self, session, tmp_path):
         """Session.cwd should update after cd."""
         subdir = tmp_path / "deep" / "nested"
         subdir.mkdir(parents=True)
 
-        await session.run(f"cd {subdir}")
+        await session.run(f"cd {subdir.as_posix()}")
         assert session.cwd == subdir
 
     async def test_env_persists(self, session):
@@ -96,6 +96,6 @@ class TestBashSession:
 
     async def test_file_operations(self, session, tmp_path):
         """Write and read a file through the session."""
-        await session.run(f"echo 'test content' > {tmp_path}/test.txt")
-        out, _, _ = await session.run(f"cat {tmp_path}/test.txt")
+        await session.run(f"echo 'test content' > {tmp_path.as_posix()}/test.txt")
+        out, _, _ = await session.run(f"cat {tmp_path.as_posix()}/test.txt")
         assert "test content" in out

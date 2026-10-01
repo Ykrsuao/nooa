@@ -17,6 +17,7 @@ result = subprocess.run(
     ["git", "diff", "--cached", "--name-only", "--diff-filter=ACM"],
     capture_output=True,
     text=True,
+    encoding="utf-8",
 )
 staged = set(result.stdout.strip().splitlines()) if result.stdout.strip() else set()
 

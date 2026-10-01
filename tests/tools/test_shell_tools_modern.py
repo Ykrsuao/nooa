@@ -15,10 +15,12 @@ Strategy:
 from __future__ import annotations
 
 import json
+import os
 import random
 import shutil
 import string
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -69,22 +71,55 @@ def test_gate(cmd, expected):
 # Fixtures
 # --------------------------------------------------------------------------
 @pytest.fixture
+async def shell_factory():
+    shells = []
+
+    def create(cwd):
+        shell = ShellTools(cwd=str(cwd))
+        shells.append(shell)
+        return shell
+
+    yield create
+    for shell in shells:
+        await shell.close()
+
+
+@pytest.fixture
 def repo(tmp_path: Path) -> Path:
-    (tmp_path / "a.py").write_text('def foo():\n    return "bar"\n# foo again\nfooo = 1\n')
-    (tmp_path / "b.txt").write_text("no match here\nFOO upper\n  foo indented\n")
+    (tmp_path / "a.py").write_text(
+        'def foo():\n    return "bar"\n# foo again\nfooo = 1\n', encoding="utf-8"
+    )
+    (tmp_path / "b.txt").write_text("no match here\nFOO upper\n  foo indented\n", encoding="utf-8")
     (tmp_path / "sub").mkdir()
-    (tmp_path / "sub" / "c.py").write_text("x = 1\nfoo = 2\n")
+    (tmp_path / "sub" / "c.py").write_text("x = 1\nfoo = 2\n", encoding="utf-8")
     return tmp_path
 
 
 def _grep_anchor_lines(repo: Path, cmd: str) -> set[tuple[str, int]]:
     """Ground truth: (relpath, line) the agent's own grep -n reports."""
-    res = subprocess.run(cmd, cwd=repo, shell=True, capture_output=True, text=True)
+    if sys.platform == "win32":
+        # shell=True would be cmd.exe, which keeps the single quotes in the
+        # pattern; run the command in MSYS2 bash, as ShellTools does.
+        from nooa.tools import _win_bash
+
+        bash = _win_bash.find_bash()
+        res = subprocess.run(
+            [str(bash), "-c", cmd],
+            cwd=repo,
+            env=_win_bash.bash_env(bash, os.environ.copy()),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+    else:
+        res = subprocess.run(
+            cmd, cwd=repo, shell=True, capture_output=True, text=True, encoding="utf-8"
+        )
     out = set()
     for ln in res.stdout.splitlines():
         parts = ln.split(":", 2)
         if len(parts) >= 2 and parts[1].isdigit():
-            p = parts[0]
+            p = parts[0].replace("\\", "/")  # rg on Windows prints .\sub\c.py
             if p.startswith("./"):
                 p = p[2:]
             out.add((p, int(parts[1])))
@@ -105,8 +140,8 @@ def _grep_anchor_lines(repo: Path, cmd: str) -> set[tuple[str, int]]:
     ],
 )
 @pytest.mark.asyncio
-async def test_matches_equal_grep(repo: Path, cmd: str):
-    sh = ShellTools(cwd=str(repo))
+async def test_matches_equal_grep(repo: Path, cmd: str, shell_factory):
+    sh = shell_factory(repo)
     r = await sh.run(cmd)
     truth = _grep_anchor_lines(repo, cmd)
     assert r.matches is not None, "pure search should attach matches"
@@ -115,17 +150,19 @@ async def test_matches_equal_grep(repo: Path, cmd: str):
 
 
 @pytest.mark.asyncio
-async def test_match_anchor_is_editable(repo: Path):
-    sh = ShellTools(cwd=str(repo))
+async def test_match_anchor_is_editable(repo: Path, shell_factory):
+    sh = shell_factory(repo)
     r = await sh.run("grep -rn 'fooo = 1' .")
     assert r.matches, "should find the assignment"
     m = next(x for x in r.matches if x.path == "a.py")
     await sh.replace(m, "fooo = 999\n")
-    assert "fooo = 999" in (repo / "a.py").read_text()
+    assert "fooo = 999" in (repo / "a.py").read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio
-async def test_repeated_noncontiguous_search_path_keeps_resolved_path(repo: Path, monkeypatch):
+async def test_repeated_noncontiguous_search_path_keeps_resolved_path(
+    repo: Path, monkeypatch, shell_factory
+):
     """A cached path must not inherit the preceding result's resolved path."""
 
     class FakeSession:
@@ -143,7 +180,7 @@ async def test_repeated_noncontiguous_search_path_keeps_resolved_path(repo: Path
     async def fake_get_session():
         return FakeSession()
 
-    sh = ShellTools(cwd=str(repo))
+    sh = shell_factory(repo)
     monkeypatch.setattr(sh, "_get_session", fake_get_session)
 
     matches = await sh._harvest_matches(
@@ -161,11 +198,11 @@ async def test_repeated_noncontiguous_search_path_keeps_resolved_path(repo: Path
 
 
 @pytest.mark.asyncio
-async def test_search_match_stays_bound_after_cwd_change(repo: Path):
-    sh = ShellTools(cwd=str(repo))
+async def test_search_match_stays_bound_after_cwd_change(repo: Path, shell_factory):
+    sh = shell_factory(repo)
     other = repo / "other"
     other.mkdir()
-    (other / "a.py").write_text("fooo = 1\n")
+    (other / "a.py").write_text("fooo = 1\n", encoding="utf-8")
 
     result = await sh.run("grep -n 'fooo = 1' a.py")
     assert result.matches
@@ -173,8 +210,8 @@ async def test_search_match_stays_bound_after_cwd_change(repo: Path):
     await sh.run("cd other")
     await sh.replace(match, "fooo = 999\n")
 
-    assert "fooo = 999" in (repo / "a.py").read_text()
-    assert (other / "a.py").read_text() == "fooo = 1\n"
+    assert "fooo = 999" in (repo / "a.py").read_text(encoding="utf-8")
+    assert (other / "a.py").read_text(encoding="utf-8") == "fooo = 1\n"
 
 
 # --------------------------------------------------------------------------
@@ -190,26 +227,26 @@ async def test_search_match_stays_bound_after_cwd_change(repo: Path):
     ],
 )
 @pytest.mark.asyncio
-async def test_fail_closed(repo: Path, cmd: str):
-    sh = ShellTools(cwd=str(repo))
+async def test_fail_closed(repo: Path, cmd: str, shell_factory):
+    sh = shell_factory(repo)
     r = await sh.run(cmd)
     assert r.matches is None
 
 
 @pytest.mark.asyncio
-async def test_grep_without_n_is_unverifiable(repo: Path):
+async def test_grep_without_n_is_unverifiable(repo: Path, shell_factory):
     """grep without -n prints no line numbers -> can't verify -> attach nothing."""
-    sh = ShellTools(cwd=str(repo))
+    sh = shell_factory(repo)
     r = await sh.run("grep -r 'foo' .")
     assert r.matches is None
 
 
 @pytest.mark.asyncio
-async def test_truncated_head_attaches_displayed_subset(repo: Path):
+async def test_truncated_head_attaches_displayed_subset(repo: Path, shell_factory):
     """A safe ``| head -N`` truncates the *display* to a prefix; the shown lines
     are still real matches, so attach exactly those (subset, not the full set).
     """
-    sh = ShellTools(cwd=str(repo))
+    sh = shell_factory(repo)
     full = await sh.run("grep -rn 'foo' .")
     assert full.matches is not None and len(full.matches) > 1
 
@@ -227,14 +264,14 @@ async def test_truncated_head_attaches_displayed_subset(repo: Path):
 
 
 @pytest.mark.asyncio
-async def test_truncated_head_match_is_editable(repo: Path):
+async def test_truncated_head_match_is_editable(repo: Path, shell_factory):
     """A Match from a head-truncated grep edits at the correct anchor."""
-    sh = ShellTools(cwd=str(repo))
+    sh = shell_factory(repo)
     r = await sh.run("grep -rn 'fooo = 1' . | head -5")
     assert r.matches, "should attach the assignment despite the head pipe"
     m = next(x for x in r.matches if x.path == "a.py")
     await sh.replace(m, "fooo = 777\n")
-    assert "fooo = 777" in (repo / "a.py").read_text()
+    assert "fooo = 777" in (repo / "a.py").read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(
@@ -245,11 +282,11 @@ async def test_truncated_head_match_is_editable(repo: Path):
     ],
 )
 @pytest.mark.asyncio
-async def test_single_file_grep_attaches_matches(repo: Path, cmd: str):
+async def test_single_file_grep_attaches_matches(repo: Path, cmd: str, shell_factory):
     """A grep targeting one explicit file omits the filename ("line:content"),
     but the path is known a priori, so matches must still attach and be correct.
     """
-    sh = ShellTools(cwd=str(repo))
+    sh = shell_factory(repo)
     r = await sh.run(cmd)
     truth = _grep_anchor_lines(repo, cmd.replace(" a.py", " --with-filename a.py"))
     assert r.matches is not None, "single-file pure search should attach matches"
@@ -260,13 +297,13 @@ async def test_single_file_grep_attaches_matches(repo: Path, cmd: str):
 
 
 @pytest.mark.asyncio
-async def test_single_file_grep_match_is_editable(repo: Path):
+async def test_single_file_grep_match_is_editable(repo: Path, shell_factory):
     """A Match from a single-file grep can be passed to replace() to edit in place."""
-    sh = ShellTools(cwd=str(repo))
+    sh = shell_factory(repo)
     r = await sh.run("grep -n 'fooo = 1' a.py")
     assert r.matches, "single-file grep should find the assignment"
     await sh.replace(r.matches[0], "fooo = 999\n")
-    assert "fooo = 999" in (repo / "a.py").read_text()
+    assert "fooo = 999" in (repo / "a.py").read_text(encoding="utf-8")
 
 
 # --------------------------------------------------------------------------
@@ -282,18 +319,20 @@ def _random_corpus(tmp: Path, seed: int) -> Path:
         lines = [
             "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 30))) for _ in range(nlines)
         ]
-        (root / f"f{i}.txt").write_text("\n".join(lines) + ("\n" if lines else ""))
+        (root / f"f{i}.txt").write_text(
+            "\n".join(lines) + ("\n" if lines else ""), encoding="utf-8"
+        )
     return root
 
 
 @pytest.mark.parametrize("seed", range(40))
 @pytest.mark.asyncio
-async def test_property_oracle(tmp_path: Path, seed: int):
+async def test_property_oracle(tmp_path: Path, seed: int, shell_factory):
     root = _random_corpus(tmp_path, seed)
     rng = random.Random(seed * 7919)
     pat = rng.choice(["a", "b", "abc", "x", ":", "la", "f"])
     cmd = f"grep -rn -F {pat!r} ."
-    sh = ShellTools(cwd=str(root))
+    sh = shell_factory(root)
     r = await sh.run(cmd)
     truth = _grep_anchor_lines(root, cmd)
     # invariant: either matches is None (gate/verify declined) OR it equals truth
@@ -369,7 +408,8 @@ def code_repo(tmp_path: Path) -> Path:
         "COUNT = 1  # COUNT DISTINCT\n"
         "FILE_UPLOAD_PERMISSIONS = 0o644\n"
         "import os\n"
-        "from django.db import connection\n"
+        "from django.db import connection\n",
+        encoding="utf-8",
     )
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_x.py").write_text(
@@ -380,19 +420,20 @@ def code_repo(tmp_path: Path) -> Path:
         "def set_xlim(self):\n"
         "    pass\n"
         "def set_ylim(self):\n"
-        "    pass\n"
+        "    pass\n",
+        encoding="utf-8",
     )
     return tmp_path
 
 
 @pytest.mark.parametrize("pattern", REAL_SCRAPED_PATTERNS)
 @pytest.mark.asyncio
-async def test_scraped_patterns_oracle(code_repo: Path, pattern: str):
+async def test_scraped_patterns_oracle(code_repo: Path, pattern: str, shell_factory):
     """Differential oracle on real model-issued grep patterns."""
     cmd = f"grep -rn {pattern!r} ."
     if not is_pure_search_command(cmd):
         pytest.skip("gate declined (not a pure search)")
-    sh = ShellTools(cwd=str(code_repo))
+    sh = shell_factory(code_repo)
     r = await sh.run(cmd)
     truth = _grep_anchor_lines(code_repo, cmd)
     # Invariant: matches is None OR equals grep's own reported anchors.
@@ -407,12 +448,12 @@ async def test_scraped_patterns_oracle(code_repo: Path, pattern: str):
 
 @pytest.mark.parametrize("pattern", [p for p in REAL_SCRAPED_PATTERNS if "|" in p])
 @pytest.mark.asyncio
-async def test_scraped_alternation_patterns(code_repo: Path, pattern: str):
+async def test_scraped_alternation_patterns(code_repo: Path, pattern: str, shell_factory):
     """Alternation patterns (the | is in the quoted pattern, NOT a shell pipe)."""
     cmd = f"grep -rn {pattern!r} ."
     # the gate must NOT mistake the in-pattern | for a shell pipe
     assert is_pure_search_command(cmd), "quoted | must not trip the pipe gate"
-    sh = ShellTools(cwd=str(code_repo))
+    sh = shell_factory(code_repo)
     r = await sh.run(cmd)
     truth = _grep_anchor_lines(code_repo, cmd)
     if r.matches is not None:

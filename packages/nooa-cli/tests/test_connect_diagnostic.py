@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Diagnostic handoffs explain reproduction and sources without exposing credentials."""
 
+import json
 import shlex
 from pathlib import Path
 
@@ -15,7 +16,7 @@ def test_target_and_effective_source_are_distinct(tmp_path, monkeypatch):
 
     target = tmp_path / "target file.yaml"
     override = tmp_path / "override.yaml"
-    override.write_text("models: {saved: {model_name: openai/model}}\n")
+    override.write_text("models: {saved: {model_name: openai/model}}\n", encoding="utf-8")
     monkeypatch.setattr(llm_config, "llm_config_chain", lambda: [override])
     monkeypatch.setenv("CHECK_KEY", "private-value")
     context = diagnostic_context(
@@ -39,14 +40,14 @@ def test_target_and_effective_source_are_distinct(tmp_path, monkeypatch):
     )
     assert '"api_key"' not in prompt
     assert "git clone" not in prompt
-    assert context["source_root"].startswith("/")
-    assert all(path.startswith("/") for path in context["reference_paths"])
+    assert Path(context["source_root"]).is_absolute()
+    assert all(Path(path).is_absolute() for path in context["reference_paths"])
     from nooa.skill import _parse_skill_md
 
     skill_path = Path(context["reference_paths"][0])
     name, _, _ = _parse_skill_md(skill_path.parent)
     assert name == "nooa-model-configuration"
-    assert str(skill_path) in prompt
+    assert json.dumps(str(skill_path)) in prompt  # JSON-escaped, like Windows backslashes
     assert "nooa-agent-authoring" not in prompt
     assert context["target_in_registry_chain"] is False
     assert shlex.split(context["rerun_command"])[-1] == "2136"
@@ -57,7 +58,7 @@ def test_context_does_not_mask_broken_yaml_or_leak_pasted_key(tmp_path, monkeypa
     from nooa import llm_config
 
     broken = tmp_path / "broken.yaml"
-    broken.write_text("models: [invalid: : private-secret\n")
+    broken.write_text("models: [invalid: : private-secret\n", encoding="utf-8")
     monkeypatch.setattr(llm_config, "llm_config_chain", lambda: [broken])
     context = diagnostic_context(
         target=tmp_path / "private-secret.yaml",

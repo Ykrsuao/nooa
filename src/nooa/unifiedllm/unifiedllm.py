@@ -1370,7 +1370,9 @@ class UnifiedLLM(ABC):
     async def __aexit__(self, *exc_info):
         await self.aclose()
 
-    def _resolve_cache_mapping(self, model: str | None = None, *, responses: bool) -> str | None:
+    def _resolve_cache_mapping(
+        self, model: str | None = None, *, responses: bool
+    ) -> Literal["auto", "anthropic", "openai"] | None:
         """The single source of truth for which cache_control mapping applies.
 
         Both the marking decision here and the rendering decision in

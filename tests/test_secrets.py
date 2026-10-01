@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 
 import pytest
 
@@ -22,27 +23,28 @@ _KEY2 = "NEMO_TEST_SECRET_KEY2"
 
 def test_write_secret_preserves_values_and_does_not_export(tmp_path, monkeypatch):
     path = tmp_path / "secrets.yaml"
-    path.write_text("env:\n  OTHER: old-value\nmetadata: keep\n")
+    path.write_text("env:\n  OTHER: old-value\nmetadata: keep\n", encoding="utf-8")
     monkeypatch.delenv(_KEY, raising=False)
     write_secret_env(path, _KEY, "new-value")
     import yaml
 
-    assert yaml.safe_load(path.read_text()) == {
+    assert yaml.safe_load(path.read_text(encoding="utf-8")) == {
         "env": {"OTHER": "old-value", _KEY: "new-value"},
         "metadata": "keep",
     }
-    assert path.stat().st_mode & 0o777 == 0o600
+    if sys.platform != "win32":  # Windows has no Unix permission bits
+        assert path.stat().st_mode & 0o777 == 0o600
     assert _KEY not in os.environ
 
 
 def test_invalid_secret_yaml_is_not_disclosed_or_replaced(tmp_path):
     path = tmp_path / "secrets.yaml"
     original = "env: [PRIVATE-OLD-KEY"
-    path.write_text(original)
+    path.write_text(original, encoding="utf-8")
     with pytest.raises(ValueError) as caught:
         write_secret_env(path, _KEY, "PRIVATE-NEW-KEY")
     assert "PRIVATE" not in str(caught.value)
-    assert path.read_text() == original
+    assert path.read_text(encoding="utf-8") == original
 
 
 @pytest.fixture
@@ -69,7 +71,7 @@ def _clean_env(monkeypatch):
 
 
 def _write(d, body):
-    (d / "secrets.yaml").write_text(body)
+    (d / "secrets.yaml").write_text(body, encoding="utf-8")
 
 
 def test_no_file_is_noop(user_dir, project_dir):
@@ -122,7 +124,7 @@ def test_null_value_skipped(user_dir, project_dir):
 def test_env_var_override_layer(user_dir, project_dir, tmp_path, monkeypatch):
     _write(user_dir, f"env:\n  {_KEY}: user-val\n")
     override = tmp_path / "override.yaml"
-    override.write_text(f"env:\n  {_KEY}: override-val\n")
+    override.write_text(f"env:\n  {_KEY}: override-val\n", encoding="utf-8")
     monkeypatch.setenv("NEMO_OO_SECRETS", str(override))
     load_secrets_into_env()
     assert os.environ[_KEY] == "override-val"

@@ -327,7 +327,11 @@ def test_refused_payload_is_answered_as_tool_error_without_dispatch():
         "tool_call_id": 7,
         "payload": CODEC.dumps(Detail(n=1)),
     }
-    ex._service_tool_call(msg, asyncio.new_event_loop())
+    loop = asyncio.new_event_loop()
+    try:
+        ex._service_tool_call(msg, loop)
+    finally:
+        loop.close()
     (response,) = conn.sent
     assert response["type"] == "tool_result" and response["tool_call_id"] == 7
     assert response["ok"] is False
@@ -350,7 +354,11 @@ def test_refused_payload_is_answered_as_tool_error_without_dispatch():
 def test_malformed_broker_requests_are_answered_as_tool_errors(msg):
     conn = _FakeConn()
     ex = _bare_executor(conn)
-    ex._service_tool_call({"type": "tool_call", "tool_call_id": 1, **msg}, asyncio.new_event_loop())
+    loop = asyncio.new_event_loop()
+    try:
+        ex._service_tool_call({"type": "tool_call", "tool_call_id": 1, **msg}, loop)
+    finally:
+        loop.close()
     assert conn.sent[0]["ok"] is False
     assert "malformed" in conn.sent[0]["error"]
 

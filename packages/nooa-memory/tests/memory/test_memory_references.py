@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for pass-by-reference memories: parsing, capture, resolution, rendering."""
 
+import sys
+
 import pytest
 from nooa_memory import (
     MemoryConfig,
@@ -58,6 +60,28 @@ def test_file_capture_rejects_escaping_paths(mgr, agent):
         capture(agent, mgr.store, "file:/etc/passwd")
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows rooted and drive-relative paths")
+@pytest.mark.parametrize("form", ["rooted", "drive-relative", "absolute"])
+def test_file_reference_rejects_windows_anchors_even_inside_workspace(
+    mgr, agent, tmp_path, monkeypatch, form
+):
+    monkeypatch.chdir(tmp_path)
+    target = tmp_path / "notes.txt"
+    target.write_text("workspace data", encoding="utf-8")
+    keys = {
+        "rooted": str(target)[len(target.drive) :],
+        "drive-relative": f"{target.drive}{target.name}",
+        "absolute": str(target),
+    }
+    key = keys[form]
+    with pytest.raises(ValueError, match="must be relative"):
+        capture(agent, mgr.store, f"file:{key}")
+    stored = MemoryRef(kind="file", key=key, preview="snapshot")
+    resolved = resolve(agent, mgr.store, stored)
+    assert resolved.status == "DANGLING"
+    assert resolved.value_repr == "snapshot"
+
+
 def test_foreign_escaping_ref_resolves_dangling_not_raise(mgr, agent):
     # A stored ref may come from another agent: resolution must degrade, not read.
     hostile = MemoryRef(kind="file", key="../../etc/passwd", preview="nope")
@@ -97,10 +121,10 @@ def test_context_ref_resolves_block(mgr, agent):
 def test_file_ref_reads_fresh_content(mgr, agent, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     f = tmp_path / "notes.md"
-    f.write_text("v1 of the notes")
+    f.write_text("v1 of the notes", encoding="utf-8")
     ref = capture(agent, mgr.store, "file:notes.md")
     assert ref.preview == "v1 of the notes"
-    f.write_text("v2 of the notes")  # the file moves on...
+    f.write_text("v2 of the notes", encoding="utf-8")  # the file moves on...
     res = resolve(agent, mgr.store, ref)
     assert res.status == "LIVE"
     assert "v2" in res.value_repr  # ...and the reference stays current

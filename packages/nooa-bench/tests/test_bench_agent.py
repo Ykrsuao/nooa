@@ -73,7 +73,7 @@ def test_trajectory_excludes_opaque_provider_state(monkeypatch, tmp_path):
 
     runner._write_trajectory(agent)
 
-    payload = (tmp_path / "trajectory.json").read_text()
+    payload = (tmp_path / "trajectory.json").read_text(encoding="utf-8")
     assert "public answer" in payload
     assert "portable reasoning" in payload
     assert "provider-secret" not in payload
@@ -92,9 +92,9 @@ async def test_delegate_uses_framework_value_formatting(agent_type, monkeypatch,
     llm = FakeLLMClient(
         scripted_responses=[
             LLMResponse(
-                tool_calls=[
-                    ToolCall(id="cell", name="python_cell", arguments=json.dumps({"code": code}))
-                ],
+                parts=(
+                    ToolCall(id="cell", name="python_cell", arguments=json.dumps({"code": code})),
+                ),
                 finish_reason="tool_calls",
             )
         ]
@@ -137,7 +137,7 @@ def test_trajectory_preserves_nested_json_without_private_state(monkeypatch, tmp
     from pydantic import BaseModel, Field
 
     from nooa.context_blocks.events import ToolCallEvent, ToolResult
-    from nooa.events import PythonOutput
+    from nooa.events import PythonOutput, ResultStatus
 
     class Payload(BaseModel):
         answer: str = "visible"
@@ -160,7 +160,7 @@ def test_trajectory_preserves_nested_json_without_private_state(monkeypatch, tmp
     )
     nested = PythonOutput(
         tool_call_id="c1",
-        execution_status="complete",
+        execution_status=ResultStatus.COMPLETE,
         execution_count=1,
         value={"responses": [response], "payload": Payload()},
     )
@@ -170,7 +170,7 @@ def test_trajectory_preserves_nested_json_without_private_state(monkeypatch, tmp
     agent = type("Agent", (), {"event_manager": manager})()
     monkeypatch.setattr(runner, "LOGS_DIR", tmp_path)
     runner._write_trajectory(agent)
-    encoded = (tmp_path / "trajectory.json").read_text()
+    encoded = (tmp_path / "trajectory.json").read_text(encoding="utf-8")
     exported = json.loads(encoded)
     assert exported[0]["result"]["content"] == "actual result"
     assert exported[0]["result"]["tool_call_id"] == "c1"
@@ -209,9 +209,8 @@ async def test_merge_error_is_not_advertised_in_python_cell_context(agent_class)
     from nooa.strategies import CodeActV2
 
     agent = agent_class(llm=FakeLLMClient())
-    runtime = type("Runtime", (), {"agent": agent})()
     try:
-        rendered = await CodeActV2().python_cell_context(runtime)
+        rendered = await CodeActV2().python_cell_context(agent.runtime)
         assert "DelegationMergeError" not in rendered
         assert "TaskResult" in rendered
         assert issubclass(bench_agent_module.DelegationMergeError, ValueError)
@@ -500,9 +499,11 @@ def test_rlm_identity_is_normalized_independently_of_python_docstring_dedent():
     import inspect
 
     prompt = RLMBenchAgent.__doc__
+    base_prompt = BenchAgent.__doc__
+    assert prompt is not None and base_prompt is not None
     assert prompt == inspect.cleandoc(prompt)
     assert "\nUse context-isolated subagents" in prompt
-    assert prompt.startswith(inspect.cleandoc(BenchAgent.__doc__))
+    assert prompt.startswith(inspect.cleandoc(base_prompt))
 
 
 @pytest.mark.asyncio
@@ -680,7 +681,9 @@ def test_problem_statement_skips_blank_primary_field():
 def test_capability_and_delegation_examples_are_host_independent():
     from nooa.tools.method_writing_lib import MethodWriting
 
-    assert "doc(self.methodwriting)" not in MethodWriting.__doc__
+    prompt = MethodWriting.__doc__
+    assert prompt is not None
+    assert "doc(self.methodwriting)" not in prompt
     assert "await self.delegate(objective, supplied_context)" in RLMBenchAgent._solve_task.__doc__
 
 
@@ -702,12 +705,10 @@ async def test_solve_task_uses_v2_single_tool_contract(agent_type, tmp_path):
         scripted_responses=[
             LLMResponse(
                 raw_response=None,
-                content="",
-                tool_calls=[
-                    ToolCall(id="call_1", name="python_cell", arguments=json.dumps({"code": code}))
-                ],
+                parts=(
+                    ToolCall(id="call_1", name="python_cell", arguments=json.dumps({"code": code})),
+                ),
                 finish_reason="tool_calls",
-                assistant_message={"role": "assistant", "content": ""},
             )
         ]
     )
@@ -728,10 +729,12 @@ async def test_solve_task_uses_v2_single_tool_contract(agent_type, tmp_path):
         result = await agent._solve_task("solve the supplied task")
         assert result.solution_description == "done"
 
-        assert [tool.name for tool in llm.last_tools or []] == ["python_cell"]
-        assert "doc(self.delegate)" in llm.last_tools[0].description
-        assert "asyncio.gather" in llm.last_tools[0].description
-        assert "PredictStrategy" in llm.last_tools[0].description
+        tools = llm.last_tools
+        assert tools is not None
+        assert [tool.name for tool in tools] == ["python_cell"]
+        assert "doc(self.delegate)" in tools[0].description
+        assert "asyncio.gather" in tools[0].description
+        assert "PredictStrategy" in tools[0].description
         system_prompt = "\n".join(
             str(message.get("content", ""))
             for message in llm.last_messages
@@ -833,12 +836,12 @@ for name in ('agent', 'activity', 'slash_commands', 'settings'):
 @pytest.mark.asyncio
 async def test_original_task_remains_after_prefill_compaction(tmp_path):
     class CompactingLLM(FakeLLMClient):
-        async def acall(self, messages, **kwargs):
+        async def acall(self, messages, tools=None, output_model=None, **kwargs):
             if not self.compacted:
                 tags = list(agent.event_manager.keys())
                 agent.event_manager.collapse(tags[0], tags[-1], summary_text="no task text here")
                 self.compacted = True
-            return await super().acall(messages, **kwargs)
+            return await super().acall(messages, tools=tools, output_model=output_model, **kwargs)
 
     def response(code, call_id):
         return LLMResponse(

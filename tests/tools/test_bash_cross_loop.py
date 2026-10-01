@@ -98,6 +98,7 @@ class TestCrossLoopLockContention:
         timed_out = not phase2_done.wait(timeout=15)
         t2.join(timeout=2)
 
+        await session.close()
         assert not timed_out, "Phase 2 thread timed out (> 15 s)"
         assert not t2.is_alive(), "Phase 2 thread still running after join"
         # This is the actual assertion — without the fix, RuntimeError is raised:
@@ -185,6 +186,7 @@ class TestCrossLoopLockContention:
         timed_out = not phase2_done.wait(timeout=15)
         t2.join(timeout=2)
 
+        await shell.close()
         assert not timed_out, "Phase 2 thread timed out (> 15 s)"
         assert not t2.is_alive(), "Phase 2 thread still running after join"
         assert phase2_error[0] is None, f"Phase 2: {phase2_error[0]}"

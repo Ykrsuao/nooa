@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 import json
+from pathlib import PurePath
 
 import pytest
 import yaml
@@ -67,7 +68,8 @@ def test_working_dir_saves_under_its_nooa_directory_like_the_tui(tmp_path):
     target = workspace / ".nooa" / "llm_config.yaml"
     assert target.exists()
     assert (
-        yaml.safe_load(target.read_text())["models"]["local"]["api_base"] == "https://api.test/v1"
+        yaml.safe_load(target.read_text(encoding="utf-8"))["models"]["local"]["api_base"]
+        == "https://api.test/v1"
     )
 
 
@@ -75,7 +77,7 @@ def test_working_dir_keeps_project_registry_guidance_and_precedence(tmp_path, mo
     from nooa import llm_config, paths
 
     user_registry = tmp_path / "user-llm-config.yaml"
-    user_registry.write_text("models: {local: {model_name: openai/old}}\n")
+    user_registry.write_text("models: {local: {model_name: openai/old}}\n", encoding="utf-8")
     monkeypatch.setattr(llm_config, "llm_config_chain", lambda: [user_registry])
     monkeypatch.setattr(
         paths,
@@ -171,7 +173,8 @@ def test_working_dir_with_stage_save_still_works(tmp_path):
                     "client_type": "completion",
                 },
             }
-        )
+        ),
+        encoding="utf-8",
     )
     options = [
         "--stage",
@@ -194,6 +197,7 @@ def test_working_dir_expands_a_literal_tilde(tmp_path, monkeypatch):
     checked explicitly after expansion instead.
     """
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     options = [
         "wire/model",
         "--as",
@@ -243,7 +247,8 @@ def test_working_dir_reports_a_file_as_not_a_directory(tmp_path, monkeypatch):
     actually exercise the gap.
     """
     monkeypatch.setenv("HOME", str(tmp_path))
-    (tmp_path / "notadir.txt").write_text("hello")
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    (tmp_path / "notadir.txt").write_text("hello", encoding="utf-8")
     options = [
         "wire/model",
         "--as",
@@ -346,7 +351,7 @@ def test_enabled_reasoning_without_evidence_warns_once_before_save(
     if mode == "missing":
         assert result.output.index(warning) < result.output.index("Write model entry")
         assert "Try another API format or review the server's reasoning settings" in result.output
-        entry = yaml.safe_load(path.read_text())["models"]["local"]
+        entry = yaml.safe_load(path.read_text(encoding="utf-8"))["models"]["local"]
         assert "provenance" not in entry  # evidence stays in the session
 
 
@@ -355,7 +360,10 @@ def test_offline_cli_needs_no_key_and_writes_generated_registry(tmp_path, monkey
     path = tmp_path / "connected.yaml"
     result = CliRunner().invoke(command, [*args(path), "--yes"])
     assert result.exit_code == 0, result.output
-    assert yaml.safe_load(path.read_text())["models"]["local"]["model_name"] == "openai/wire/model"
+    assert (
+        yaml.safe_load(path.read_text(encoding="utf-8"))["models"]["local"]["model_name"]
+        == "openai/wire/model"
+    )
     assert "skipped" in result.output
     assert "not approved" in result.output
 
@@ -397,7 +405,7 @@ def test_recovery_edit_server_preserves_budget_and_saves_only_new_route(tmp_path
     )
     assert result.exit_code == 0, result.output
     assert [r.url.host for r in sent] == ["old.example"] * 3 + ["new.example"] * 3
-    entry = yaml.safe_load(path.read_text())["models"]["local"]
+    entry = yaml.safe_load(path.read_text(encoding="utf-8"))["models"]["local"]
     assert entry["api_base"] == "https://new.example/v1"
     assert entry["model_name"] == "openai/new-model"
     assert "provenance" not in entry  # budget accounting stays in the session
@@ -418,7 +426,8 @@ def test_multiple_saved_key_variables_require_an_explicit_choice(tmp_path, monke
                     for name in ("KEY_ONE", "KEY_TWO")
                 }
             }
-        )
+        ),
+        encoding="utf-8",
     )
     options = [
         "model",
@@ -437,10 +446,13 @@ def test_multiple_saved_key_variables_require_an_explicit_choice(tmp_path, monke
     assert result.exit_code == (2 if yes else 0), result.output
     if yes:
         assert "supply --api-key-env" in result.output
-        assert "new" not in yaml.safe_load(path.read_text())["models"]
+        assert "new" not in yaml.safe_load(path.read_text(encoding="utf-8"))["models"]
     else:
         assert "Saved key variable" in result.output
-        assert yaml.safe_load(path.read_text())["models"]["new"]["api_key_env"] == "KEY_TWO"
+        assert (
+            yaml.safe_load(path.read_text(encoding="utf-8"))["models"]["new"]["api_key_env"]
+            == "KEY_TWO"
+        )
 
 
 def _single_saved_key_options(path):
@@ -471,7 +483,8 @@ def _write_single_saved_key_entry(path, name="CONNECT_SAVED_KEY"):
                     }
                 }
             }
-        )
+        ),
+        encoding="utf-8",
     )
 
 
@@ -484,7 +497,10 @@ def test_saved_key_message_says_using_only_when_a_value_is_actually_set(tmp_path
     normalized_output = " ".join(result.output.split())
     assert "Using saved key variable CONNECT_SAVED_KEY for this endpoint." in normalized_output
     assert "API key (used only for this setup)" not in normalized_output
-    assert yaml.safe_load(path.read_text())["models"]["new"]["api_key_env"] == "CONNECT_SAVED_KEY"
+    assert (
+        yaml.safe_load(path.read_text(encoding="utf-8"))["models"]["new"]["api_key_env"]
+        == "CONNECT_SAVED_KEY"
+    )
 
 
 def test_saved_key_message_is_honest_and_still_prompts_when_no_value_is_set(tmp_path, monkeypatch):
@@ -504,7 +520,10 @@ def test_saved_key_message_is_honest_and_still_prompts_when_no_value_is_set(tmp_
         "but it has no value set." in normalized_output
     )
     assert "Using saved key variable CONNECT_SAVED_KEY for this endpoint." not in normalized_output
-    assert yaml.safe_load(path.read_text())["models"]["new"]["api_key_env"] == "CONNECT_SAVED_KEY"
+    assert (
+        yaml.safe_load(path.read_text(encoding="utf-8"))["models"]["new"]["api_key_env"]
+        == "CONNECT_SAVED_KEY"
+    )
 
 
 @pytest.mark.parametrize("save_key", [False, True])
@@ -521,14 +540,15 @@ def test_new_key_path_persists_only_after_separate_confirmation(tmp_path, monkey
     )
     assert result.exit_code == 0, result.output
     assert (
-        yaml.safe_load(path.read_text())["models"]["local"]["api_key_env"] == "NOOA_MODEL_API_KEY"
+        yaml.safe_load(path.read_text(encoding="utf-8"))["models"]["local"]["api_key_env"]
+        == "NOOA_MODEL_API_KEY"
     )
-    assert "new-private-test-key" not in result.output + path.read_text()
+    assert "new-private-test-key" not in result.output + path.read_text(encoding="utf-8")
     secrets = tmp_path / "secrets.yaml"
     assert secrets.exists() is save_key
     if save_key:
         assert (
-            yaml.safe_load(secrets.read_text())["env"]["NOOA_MODEL_API_KEY"]
+            yaml.safe_load(secrets.read_text(encoding="utf-8"))["env"]["NOOA_MODEL_API_KEY"]
             == "new-private-test-key"
         )
 
@@ -578,7 +598,7 @@ def test_full_yaml_preview_is_explicit_and_does_not_change_saved_entry(
     if show_config:
         assert result.output.index("Save model") < result.output.index("provenance:")
         assert result.output.index("provenance:") < result.output.index("Write model entry")
-    entry = yaml.safe_load(path.read_text())["models"]["local"]
+    entry = yaml.safe_load(path.read_text(encoding="utf-8"))["models"]["local"]
     assert entry["model_name"] == "openai/wire/model"
     assert "provenance" not in entry  # preview shows it; the registry never stores it
 
@@ -592,7 +612,7 @@ def test_declining_final_write_leaves_no_file(tmp_path):
 
 def test_yaml_failure_names_file_and_line_without_echoing_contents(tmp_path):
     path = tmp_path / "broken.yaml"
-    path.write_text("models: [\n  secret-value: }\n")
+    path.write_text("models: [\n  secret-value: }\n", encoding="utf-8")
     result = CliRunner().invoke(command, [*args(path), "--yes"])
     assert result.exit_code == 1
     assert str(path) in result.output
@@ -612,7 +632,8 @@ def test_write_failure_keeps_path_and_actionable_reason(tmp_path, monkeypatch):
     monkeypatch.setattr(connect, "write", denied)
     result = CliRunner().invoke(command, [*args(path), "--yes"])
     assert result.exit_code == 1
-    assert str(path) in result.output
+    # OSError shows the filename as its repr, which doubles Windows backslashes.
+    assert repr(str(path)) in result.output
     assert "Permission denied" in result.output
     assert "Agent diagnostic prompt" in result.output
     assert not path.exists()
@@ -624,7 +645,9 @@ def test_explicit_levels_are_written_as_request_blocks(tmp_path):
         command, [*args(path), "--yes", "--reasoning-template", "effort", "--levels", "low,high"]
     )
     assert result.exit_code == 0, result.output
-    assert yaml.safe_load(path.read_text())["models"]["local"]["reasoning_levels"] == {
+    assert yaml.safe_load(path.read_text(encoding="utf-8"))["models"]["local"][
+        "reasoning_levels"
+    ] == {
         "low": {"reasoning_effort": "low"},
         "high": {"reasoning_effort": "high"},
     }
@@ -633,14 +656,17 @@ def test_explicit_levels_are_written_as_request_blocks(tmp_path):
 def test_existing_hand_written_alias_is_replaced_with_warning(tmp_path):
     path = tmp_path / "connected.yaml"
     runner = CliRunner()
-    path.write_text("# My models\nmodels:\n  local: {model_name: openai/old}\n")
+    path.write_text("# My models\nmodels:\n  local: {model_name: openai/old}\n", encoding="utf-8")
     result = runner.invoke(command, [*args(path), "--yes"])
     assert result.exit_code == 0, result.output
     assert "Warning:" in result.output
     assert "local" in result.output
     assert str(path) in result.output
-    assert yaml.safe_load(path.read_text())["models"]["local"]["model_name"] == "openai/wire/model"
-    assert path.read_text().startswith("# My models\n")
+    assert (
+        yaml.safe_load(path.read_text(encoding="utf-8"))["models"]["local"]["model_name"]
+        == "openai/wire/model"
+    )
+    assert path.read_text(encoding="utf-8").startswith("# My models\n")
 
 
 def test_endpoint_first_flow_uses_shared_discovery(tmp_path, monkeypatch):
@@ -658,7 +684,10 @@ def test_endpoint_first_flow_uses_shared_discovery(tmp_path, monkeypatch):
     result = CliRunner().invoke(command, args(path)[1:], input="wire/model\ny\n")
     assert result.exit_code == 0, result.output
     assert calls == [("https://api.test/v1", {"api_style": "chat", "api_key": "discovery-key"})]
-    assert yaml.safe_load(path.read_text())["models"]["local"]["model_name"] == "openai/wire/model"
+    assert (
+        yaml.safe_load(path.read_text(encoding="utf-8"))["models"]["local"]["model_name"]
+        == "openai/wire/model"
+    )
 
 
 def test_masked_key_is_transient_and_cancel_does_not_write(tmp_path, monkeypatch):
@@ -695,11 +724,11 @@ def test_declining_replace_after_checks_keeps_original_entry(tmp_path, monkeypat
     monkeypatch.setattr(connect, "catalogue", forbidden)
     path = tmp_path / "models.yaml"
     original = "models: {local: {model_name: openai/old}}\n"
-    path.write_text(original)
+    path.write_text(original, encoding="utf-8")
     result = CliRunner().invoke(command, args(path), input="n\n")
     assert result.exit_code == 0, result.output
     assert result.output.index("Results ·") < result.output.index("Replace this model?")
-    assert path.read_text() == original
+    assert path.read_text(encoding="utf-8") == original
 
 
 def test_prompted_key_is_passed_to_probe_but_never_saved(tmp_path, monkeypatch):
@@ -719,7 +748,7 @@ def test_prompted_key_is_passed_to_probe_but_never_saved(tmp_path, monkeypatch):
     )
     assert result.exit_code == 0, result.output
     assert calls == ["none"]
-    assert "temporary-secret" not in result.output + path.read_text()
+    assert "temporary-secret" not in result.output + path.read_text(encoding="utf-8")
 
 
 def test_bare_command_walks_through_setup_and_checks_inline(tmp_path, monkeypatch):
@@ -780,7 +809,9 @@ def test_bare_command_walks_through_setup_and_checks_inline(tmp_path, monkeypatc
     # now actually runs (3 more than before). check_interfaces now also
     # probes reasoning by default for the one accepted (chat) interface.
     assert [r.method for r in requests] == ["GET"] + ["POST"] * 9
-    entry = yaml.safe_load((tmp_path / "llm_config.yaml").read_text())["models"]["my-model"]
+    entry = yaml.safe_load((tmp_path / "llm_config.yaml").read_text(encoding="utf-8"))["models"][
+        "my-model"
+    ]
     assert entry["model_name"] == "openai/example-model"
     assert "temporary-secret" not in result.output + yaml.safe_dump(entry)
     assert "reasoning returned" in result.output
@@ -842,7 +873,10 @@ def test_interface_menu_only_offers_successes_or_explicit_manual_escape(
     if responses_ok:
         assert result.exit_code == 0, result.output
         assert choices == [("chat", "responses")]
-        assert yaml.safe_load(path.read_text())["models"]["local"]["api_style"] == "responses"
+        assert (
+            yaml.safe_load(path.read_text(encoding="utf-8"))["models"]["local"]["api_style"]
+            == "responses"
+        )
     else:
         assert result.exit_code == 0
         assert not choices
@@ -906,17 +940,20 @@ def test_authentication_recovery_keeps_budget_and_secrets(tmp_path, monkeypatch,
     assert context["remaining_budget_tokens"] == connect.DEFAULT_CHECK_BUDGET - 3 * 712
     assert context["interface_timeout_seconds"] == 30
     assert "--stage interfaces" in context["rerun_command"]
-    assert "skills/nooa-model-configuration/SKILL.md" in handoff
+    assert any(
+        PurePath(path).match("skills/nooa-model-configuration/SKILL.md")
+        for path in context["reference_paths"]
+    )
     assert "git clone" not in handoff
     assert litellm.suppress_debug_info is False
     # check_interfaces now also probes reasoning by default for the one
     # accepted (chat) interface once recovery succeeds.
     assert len(sent) == (8 if recover else 3)
     if recover:
-        entry = yaml.safe_load(path.read_text())["models"]["local"]
+        entry = yaml.safe_load(path.read_text(encoding="utf-8"))["models"]["local"]
         assert entry["api_key_env"] == "CONNECT_GOOD"
         assert "provenance" not in entry
-        assert "test-secret" not in path.read_text()
+        assert "test-secret" not in path.read_text(encoding="utf-8")
     else:
         assert not path.exists()
 
@@ -1005,7 +1042,7 @@ def test_interface_and_later_checks_share_the_cli_budget(tmp_path, monkeypatch):
     )
     assert result.exit_code == 0, result.output
     assert len(sent) == 3  # All of the budget was spent testing interfaces.
-    entry = yaml.safe_load(path.read_text())["models"]["local"]
+    entry = yaml.safe_load(path.read_text(encoding="utf-8"))["models"]["local"]
     assert "provenance" not in entry
     assert "approved budget is too small" in result.output
     assert "setup is incomplete; budget exhausted before routing" in result.output
@@ -1044,7 +1081,7 @@ def test_model_details_appear_before_accepting_published_settings(tmp_path, monk
     for text in ("128,000", "8,192", "low, high", "Source: OpenRouter"):
         assert result.output.index(text) < result.output.index("Model settings")
     assert "not proof" not in result.output
-    entry = yaml.safe_load(path.read_text())["models"]["local"]
+    entry = yaml.safe_load(path.read_text(encoding="utf-8"))["models"]["local"]
     assert entry["context_window"] == 128000
     assert entry["reasoning_default"] == "low"
 
@@ -1076,7 +1113,7 @@ def test_no_exact_catalogue_match_offers_a_fuzzy_suggestion(tmp_path, monkeypatc
     assert result.exit_code == 0, result.output
     assert "Model not found; did you mean one of these?" in result.output
     assert "gateway/wired-model" in result.output
-    entry = yaml.safe_load(path.read_text())["models"]["local"]
+    entry = yaml.safe_load(path.read_text(encoding="utf-8"))["models"]["local"]
     if select:
         assert entry["context_window"] == 50000
         assert "No catalogue match" not in result.output
@@ -1132,7 +1169,7 @@ def test_model_settings_can_be_edited_skipped_or_cancelled(tmp_path, monkeypatch
         assert not path.exists()
         assert "Plan:" not in result.output
         return
-    entry = yaml.safe_load(path.read_text())["models"]["local"]
+    entry = yaml.safe_load(path.read_text(encoding="utf-8"))["models"]["local"]
     if action == "skip":
         assert "context_window" not in entry
         assert "reasoning_levels" not in entry
@@ -1200,7 +1237,7 @@ def test_default_budget_covers_explicit_small_cap_and_every_level(tmp_path, monk
     # rechecked at the configured cap; tools and all six levels run for real.
     # The session seed is also attempted; this minimal mock lacks a finish reason.
     assert len(bodies) == 12
-    entry = yaml.safe_load(path.read_text())["models"]["local"]
+    entry = yaml.safe_load(path.read_text(encoding="utf-8"))["models"]["local"]
     assert "provenance" not in entry  # outcomes were checked on the wire; see bodies
 
 
@@ -1329,7 +1366,9 @@ def test_provider_menu_fills_connection_defaults(
     )
     assert result.exit_code == 0, result.output
     assert seen == [(base, {"api_style": style, "api_key": "preset-test-key"})]
-    entry = yaml.safe_load((tmp_path / "llm_config.yaml").read_text())["models"]["my-model"]
+    entry = yaml.safe_load((tmp_path / "llm_config.yaml").read_text(encoding="utf-8"))["models"][
+        "my-model"
+    ]
     saved_base = base.removesuffix("/v1") if style == "anthropic" else base
     assert (entry["api_base"], entry["api_style"], entry["api_key_env"]) == (
         saved_base,
@@ -1375,7 +1414,7 @@ def test_mixed_endpoint_selects_model_before_request_interface(tmp_path, monkeyp
     assert result.exit_code == 0, result.output
     assert len(seen) == 1
     assert result.output.index("Model:") < result.output.index("API format [")
-    entry = yaml.safe_load(path.read_text())["models"]["selected"]
+    entry = yaml.safe_load(path.read_text(encoding="utf-8"))["models"]["selected"]
     assert entry["api_style"] == style
     assert entry["model_name"].endswith("/vendor-b/model")
 
@@ -1398,7 +1437,10 @@ def test_provider_flag_supports_scripted_setup(tmp_path):
         ],
     )
     assert result.exit_code == 0, result.output
-    assert yaml.safe_load(path.read_text())["models"]["local"]["api_key_env"] == "NVIDIA_API_KEY"
+    assert (
+        yaml.safe_load(path.read_text(encoding="utf-8"))["models"]["local"]["api_key_env"]
+        == "NVIDIA_API_KEY"
+    )
 
 
 def test_large_model_list_and_invalid_choice_do_not_flood_terminal(tmp_path, monkeypatch):
@@ -1443,7 +1485,7 @@ def test_server_url_suggestions_include_existing_file_without_credentials(
             }
         }
     )
-    path.write_text(original)
+    path.write_text(original, encoding="utf-8")
     monkeypatch.setattr(paths, "get_user_dir", lambda name: path)
     seen = []
 
@@ -1471,4 +1513,4 @@ def test_server_url_suggestions_include_existing_file_without_credentials(
     assert len(seen) == len(set(seen))
     assert "https://first.example/v1/" not in seen
     assert "secret" not in str(seen) and "do-not-complete" not in str(seen)
-    assert path.read_text() == original
+    assert path.read_text(encoding="utf-8") == original

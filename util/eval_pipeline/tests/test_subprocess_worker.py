@@ -12,6 +12,7 @@ Verifies that:
 import json
 import subprocess
 import sys
+from unittest.mock import AsyncMock, Mock, call
 
 import pytest
 
@@ -55,12 +56,176 @@ def _build_task_input(**overrides) -> dict:
 DummyAgent = None  # imported from _test_fixtures by subprocess workers, not needed here
 
 
+class _FalseyExecutionError(RuntimeError):
+    def __bool__(self) -> bool:
+        return False
+
+
+@pytest.fixture
+def worker_task(tmp_path, monkeypatch):
+    import nooa.tracing as tracing
+    from eval_pipeline.eval_types import SubprocessTaskInput
+
+    task_input = SubprocessTaskInput.model_validate(
+        _build_task_input(
+            trace_dir=str(tmp_path),
+            eval_metadata={"source": "worker-test"},
+        )
+    )
+    tracing_calls = Mock()
+    monkeypatch.setattr(tracing, "end_active_spans", tracing_calls.end_active_spans)
+    monkeypatch.setattr(tracing, "shutdown_traces", tracing_calls.shutdown_traces)
+    return task_input, tracing_calls
+
+
+class TestWorkerExecutionCleanup:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error", [None, "Timeout after 1s", ""])
+    async def test_returned_result_cleanup(self, worker_task, monkeypatch, error):
+        from eval_pipeline import subprocess_worker as worker
+        from eval_pipeline.models import ExecutionResult
+
+        task_input, tracing_calls = worker_task
+        execution = ExecutionResult(
+            task_id=task_input.task.id,
+            input=((), {"text": "great product"}),
+            expected="positive",
+            actual="positive",
+            trace_file=None,
+            latency_ms=1.0,
+            error=error,
+        )
+        monkeypatch.setattr(worker, "execute_task", AsyncMock(return_value=execution))
+
+        result = await worker.run_task(task_input)
+
+        expected_calls = [] if error is None else [call.end_active_spans(error)]
+        assert tracing_calls.mock_calls == [*expected_calls, call.shutdown_traces()]
+        assert result.passed is (error is None)
+        assert result.error == error
+        assert result.output == "positive"
+        assert "exact_match" in result.scores
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "error",
+        [
+            RuntimeError("execution failed"),
+            RuntimeError(""),
+            _FalseyExecutionError("falsey execution failure"),
+        ],
+        ids=["ordinary", "empty-message", "falsey-exception"],
+    )
+    async def test_raised_error_cleanup(self, worker_task, monkeypatch, error):
+        from eval_pipeline import subprocess_worker as worker
+
+        task_input, tracing_calls = worker_task
+        monkeypatch.setattr(worker, "execute_task", AsyncMock(side_effect=error))
+        score_task = AsyncMock()
+        monkeypatch.setattr(worker, "score_task", score_task)
+
+        result = await worker.run_task(task_input)
+
+        assert tracing_calls.mock_calls == [
+            call.end_active_spans(str(error)),
+            call.shutdown_traces(),
+        ]
+        score_task.assert_not_awaited()
+        assert result.passed is False
+        assert result.error == str(error)
+        assert result.test_id == "test_001_dummy_run1"
+        assert result.eval_metadata == {"source": "worker-test"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failing_hook", ["end_active_spans", "shutdown_traces"])
+    async def test_cleanup_failure_preserves_execution_error(
+        self, worker_task, monkeypatch, failing_hook
+    ):
+        from eval_pipeline import subprocess_worker as worker
+
+        task_input, tracing_calls = worker_task
+        monkeypatch.setattr(
+            worker, "execute_task", AsyncMock(side_effect=RuntimeError("original error"))
+        )
+        getattr(tracing_calls, failing_hook).side_effect = RuntimeError("cleanup error")
+
+        result = await worker.run_task(task_input)
+
+        assert result.passed is False
+        assert result.error == "original error"
+        assert tracing_calls.mock_calls == [
+            call.end_active_spans("original error"),
+            call.shutdown_traces(),
+        ]
+
+
+class TestWorkerMemoryAnnotation:
+    def test_no_monitor_preserves_result(self):
+        from eval_pipeline.subprocess_worker import _annotate_memory, _make_error_result
+
+        result = _make_error_result(None, "original error", "ExecutionError")
+
+        assert _annotate_memory(result, None) is result
+        assert result.peak_rss_mb is None
+        assert result.error == "original error"
+
+    @pytest.mark.parametrize("soft_limit_hit", [False, True])
+    @pytest.mark.parametrize("existing_error", [False, True])
+    @pytest.mark.parametrize("with_diagnostic", [False, True])
+    def test_monitor_annotation(self, tmp_path, soft_limit_hit, existing_error, with_diagnostic):
+        from eval_pipeline._memory_monitor import MemoryMonitor
+        from eval_pipeline.subprocess_worker import _annotate_memory, _make_error_result
+
+        result = _make_error_result(None, "original error", "ExecutionError")
+        if not existing_error:
+            result.error = None
+            result.error_type = None
+            result.passed = True
+        monitor = MemoryMonitor(limit_mb=100, trace_dir=str(tmp_path), sample_id="annotation")
+        monitor.peak_rss_mb = 90.0
+        monitor.soft_limit_hit = soft_limit_hit
+        monitor.diag_file = str(tmp_path / "memory_diag.txt") if with_diagnostic else None
+
+        assert _annotate_memory(result, monitor) is result
+        assert result.peak_rss_mb == 90.0
+        assert result.memory_diag_file == (monitor.diag_file if soft_limit_hit else None)
+        if existing_error:
+            assert result.error == "original error"
+            assert result.error_type == "ExecutionError"
+            assert result.passed is False
+        elif soft_limit_hit:
+            diag_name = "memory_diag.txt" if with_diagnostic else "N/A"
+            assert result.error == (
+                f"Memory soft limit hit: 90.0 MB (limit: 100 MB). Diagnostics: {diag_name}"
+            )
+            assert result.error_type == "MemoryWarning"
+            assert result.passed is False
+        else:
+            assert result.error is None
+            assert result.error_type is None
+            assert result.passed is True
+
+    def test_worker_keeps_monitor_import_lazy(self):
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import sys; import eval_pipeline.subprocess_worker; "
+                "assert 'eval_pipeline._memory_monitor' not in sys.modules",
+            ],
+            capture_output=True,
+            timeout=30,
+        )
+        assert proc.returncode == 0, proc.stderr.decode()
+
+
 class TestSubprocessWorker:
     """Test the subprocess_worker.py script via Popen."""
 
-    def test_basic_execution(self, tmp_path):
+    @pytest.mark.parametrize("memory_limit_mb", [None, 4096])
+    def test_basic_execution(self, tmp_path, memory_limit_mb):
         """Worker executes a task and returns valid EvalTestResult JSON."""
-        task_input = _build_task_input(trace_dir=str(tmp_path))
+        task_input = _build_task_input(trace_dir=str(tmp_path), memory_limit_mb=memory_limit_mb)
         proc = subprocess.run(
             [sys.executable, "-m", "eval_pipeline.subprocess_worker"],
             input=json.dumps(task_input).encode(),
@@ -194,7 +359,8 @@ class TestPersistentWorker:
             "    def __init__(self, llm=None): pass\n"
             "    async def classify(self, text):\n"
             "        print('NOISE FROM AGENT')\n"
-            "        return 'positive'\n"
+            "        return 'positive'\n",
+            encoding="utf-8",
         )
         task = _build_task_input(
             trace_dir=str(tmp_path),

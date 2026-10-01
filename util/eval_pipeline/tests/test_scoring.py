@@ -210,7 +210,7 @@ class TestComputeWeightedScore:
 class TestBuildScoringContext:
     def test_from_execution_result(self, tmp_path):
         trace_file = tmp_path / "trace.jsonl"
-        trace_file.write_text("")  # Empty trace
+        trace_file.write_text("", encoding="utf-8")  # Empty trace
 
         result = ExecutionResult(
             task_id="t1",

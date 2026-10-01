@@ -56,7 +56,7 @@ def _isolated_agent_init():
 def _only(output_dir: Path, name: str) -> Trajectory:
     files = list((output_dir / name).glob("*.json"))
     assert len(files) == 1, f"expected one {name} trajectory, got {files}"
-    return Trajectory.model_validate_json(files[0].read_text())
+    return Trajectory.model_validate_json(files[0].read_text(encoding="utf-8"))
 
 
 @strategy(PredictStrategy())

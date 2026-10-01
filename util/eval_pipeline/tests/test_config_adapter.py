@@ -11,7 +11,8 @@ class TestEvaluatorFromConfig:
     def test_loads_models_as_clients(self, tmp_path):
         """Models from config are converted to LLM clients."""
         config_file = tmp_path / "config.yaml"
-        config_file.write_text("""
+        config_file.write_text(
+            """
 name: test_eval
 models:
   gpt-4:
@@ -25,7 +26,9 @@ agent_models:
 
 output_dir: results
 test_suite: []
-""")
+""",
+            encoding="utf-8",
+        )
         from eval_pipeline.config import evaluator_from_config
 
         evaluator = evaluator_from_config(config_file)
@@ -38,22 +41,28 @@ test_suite: []
         # Create minimal agent module
         agent_dir = tmp_path / "agents"
         agent_dir.mkdir()
-        (agent_dir / "__init__.py").write_text("")
-        (agent_dir / "test_agent.py").write_text("""
+        (agent_dir / "__init__.py").write_text("", encoding="utf-8")
+        (agent_dir / "test_agent.py").write_text(
+            """
 from nooa import Agent
 
 
 class TestAgent(Agent):
     async def classify(self, text: str) -> str:
         ...
-""")
+""",
+            encoding="utf-8",
+        )
         # Create data file
         data_file = tmp_path / "data.jsonl"
-        data_file.write_text('{"kwargs": {"text": "hello"}, "expected": "positive"}\n')
+        data_file.write_text(
+            '{"kwargs": {"text": "hello"}, "expected": "positive"}\n', encoding="utf-8"
+        )
 
         # Create config
         config_file = tmp_path / "config.yaml"
-        config_file.write_text(f"""
+        config_file.write_text(
+            f"""
 name: test_eval
 models:
   gpt-4:
@@ -77,7 +86,9 @@ test_suite:
       - name: exact
         class: ExactMatchScorer
         weight: 1.0
-""")
+""",
+            encoding="utf-8",
+        )
 
         import sys
 
@@ -98,22 +109,28 @@ test_suite:
         # Create minimal agent module
         agent_dir = tmp_path / "agents"
         agent_dir.mkdir()
-        (agent_dir / "__init__.py").write_text("")
-        (agent_dir / "test_agent.py").write_text("""
+        (agent_dir / "__init__.py").write_text("", encoding="utf-8")
+        (agent_dir / "test_agent.py").write_text(
+            """
 from nooa import Agent
 
 
 class TestAgent(Agent):
     async def classify(self, text: str) -> str:
         ...
-""")
+""",
+            encoding="utf-8",
+        )
         # Create data file
         data_file = tmp_path / "data.jsonl"
-        data_file.write_text('{"kwargs": {"text": "hello"}, "expected": "positive"}\n')
+        data_file.write_text(
+            '{"kwargs": {"text": "hello"}, "expected": "positive"}\n', encoding="utf-8"
+        )
 
         # Create config with LLMJudgeScorer referencing a model
         config_file = tmp_path / "config.yaml"
-        config_file.write_text(f"""
+        config_file.write_text(
+            f"""
 name: test_eval
 models:
   gpt-4:
@@ -143,7 +160,9 @@ test_suite:
         weight: 1.0
         rubric: "Is this good?"
         model: claude-judge
-""")
+""",
+            encoding="utf-8",
+        )
 
         import sys
 
@@ -168,22 +187,28 @@ test_suite:
         # Create minimal agent module
         agent_dir = tmp_path / "agents"
         agent_dir.mkdir()
-        (agent_dir / "__init__.py").write_text("")
-        (agent_dir / "test_agent.py").write_text("""
+        (agent_dir / "__init__.py").write_text("", encoding="utf-8")
+        (agent_dir / "test_agent.py").write_text(
+            """
 from nooa import Agent
 
 
 class TestAgent(Agent):
     async def classify(self, text: str) -> str:
         ...
-""")
+""",
+            encoding="utf-8",
+        )
         # Create data file
         data_file = tmp_path / "data.jsonl"
-        data_file.write_text('{"kwargs": {"text": "hello"}, "expected": "positive"}\n')
+        data_file.write_text(
+            '{"kwargs": {"text": "hello"}, "expected": "positive"}\n', encoding="utf-8"
+        )
 
         # Create config with LLMJudgeScorer referencing non-existent model
         config_file = tmp_path / "config.yaml"
-        config_file.write_text(f"""
+        config_file.write_text(
+            f"""
 name: test_eval
 models:
   gpt-4:
@@ -209,7 +234,9 @@ test_suite:
         weight: 1.0
         rubric: "Is this good?"
         model: nonexistent-model
-""")
+""",
+            encoding="utf-8",
+        )
 
         import sys
 

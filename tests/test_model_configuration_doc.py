@@ -12,10 +12,10 @@ import yaml
 def test_manual_configuration_example_loads_without_http(tmp_path, monkeypatch):
     from nooa.unifiedllm import registry
 
-    text = (Path(__file__).parents[1] / "docs/model-configuration.md").read_text()
+    text = (Path(__file__).parents[1] / "docs/model-configuration.md").read_text(encoding="utf-8")
     config = re.search(r"```yaml\n(.*?)\n```", text, re.S).group(1)
     code = re.search(r"```python\n(.*?)\n```", text, re.S).group(1)
-    (tmp_path / "llm_config.yaml").write_text(config)
+    (tmp_path / "llm_config.yaml").write_text(config, encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(registry, "MODELS", {})
     monkeypatch.setattr(registry, "_loaded", False)

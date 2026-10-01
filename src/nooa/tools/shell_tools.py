@@ -32,14 +32,30 @@ from __future__ import annotations
 import json
 import re
 import shlex
+import sys
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 from pathlib import Path
 from typing import Annotated, Any
 
 from nooa.agentdoc import hidden, spec
 from nooa.skill import Skill
-from nooa.tools._bash_session import BashSession
+from nooa.tools._bash_session import PWD_COMMAND, BashSession
 from nooa.tools._results import StreamDone, StreamEvent
+
+
+def _read_text(path: Path) -> tuple[str, str]:
+    """Read *path* as UTF-8 with LF line endings; also return the file's own ending.
+
+    Writing the result back with ``newline=<ending>`` keeps a CRLF file CRLF and
+    an LF file LF. Plain text-mode writes would instead turn every LF into CRLF
+    on Windows (and a CRLF file into LF elsewhere). Files with mixed endings
+    are written back as LF.
+    """
+    with path.open(encoding="utf-8") as f:
+        content = f.read()
+        ending = "\r\n" if f.newlines == "\r\n" else "\n"
+    return content, ending
 
 
 class FileWrite:
@@ -422,7 +438,7 @@ class ShellTools(Skill):
             run_cmd, timeout=timeout
         )
         # Track cwd changes for read/replace/write_file path resolution
-        pwd_out, _, _, _ = await session.run_with_timeout_flag("pwd", timeout=5.0)
+        pwd_out, _, _, _ = await session.run_with_timeout_flag(PWD_COMMAND, timeout=5.0)
         if pwd_out.strip():
             self.cwd = Path(pwd_out.strip())
 
@@ -491,13 +507,15 @@ class ShellTools(Skill):
         run_cmd = self._with_stdin(self._in_directory(command, cwd), stdin)
         timed_out = False
         exit_code = 0
-        async for stream_name, chunk in session.run_stream(run_cmd, timeout=timeout):
-            if stream_name == "__done__":
-                parts = chunk.split(",")
-                exit_code = int(parts[0])
-                timed_out = bool(int(parts[1])) if len(parts) > 1 else False
-                break
-            yield StreamEvent(kind=stream_name, text=chunk)
+        async with aclosing(session.run_stream(run_cmd, timeout=timeout)) as stream:
+            async for stream_name, chunk in stream:
+                if stream_name == "__done__":
+                    parts = chunk.split(",")
+                    exit_code = int(parts[0])
+                    timed_out = bool(int(parts[1])) if len(parts) > 1 else False
+                    break
+                assert stream_name in ("stdout", "stderr")
+                yield StreamEvent(kind=stream_name, text=chunk)
         yield StreamDone(kind="done", returncode=exit_code, timed_out=timed_out)
 
     @staticmethod
@@ -599,6 +617,10 @@ class ShellTools(Skill):
                 continue
             data = d["data"]
             mpath = data["path"]["text"]
+            if sys.platform == "win32":
+                # rg joins paths with "\" on Windows; anchors use "/" like grep.
+                # (Not --path-separator=/: MSYS2 rewrites that "/" into a path.)
+                mpath = mpath.replace("\\", "/")
             if mpath.startswith("./"):
                 mpath = mpath[2:]
             line_no = data["line_number"]
@@ -649,7 +671,7 @@ class ShellTools(Skill):
             if mpath not in file_cache:
                 try:
                     resolved = self._resolve_path(mpath)
-                    lines = resolved.read_text().splitlines(keepends=True)
+                    lines = _read_text(resolved)[0].splitlines(keepends=True)
                     file_cache[mpath] = (resolved, lines)
                 except (OSError, ValueError):
                     return None
@@ -687,6 +709,8 @@ class ShellTools(Skill):
         any_line = False
         for ln in stdout.splitlines():
             any_line = True
+            if sys.platform == "win32":
+                ln = ln.replace("\\", "/")  # rg's own output: .\sub\c.py:2:
             m = re.match(r"^(?:\./)?([^:]+):(\d+):", ln)
             if m:
                 found.add((m.group(1), int(m.group(2))))
@@ -775,7 +799,7 @@ class ShellTools(Skill):
             Match with .text, .numbered, .path, .start, .end.
         """
         resolved = self._resolve_path(path)
-        content = resolved.read_text()
+        content, _ = _read_text(resolved)
         all_lines = content.splitlines(keepends=True)
         total = len(all_lines)
 
@@ -830,7 +854,7 @@ class ShellTools(Skill):
                 )
             new_text = old_or_new
             resolved = Path(target.resolved_path)
-            content = resolved.read_text()
+            content, ending = _read_text(resolved)
             all_lines = content.splitlines(keepends=True)
 
             before = all_lines[: target.start - 1]
@@ -847,7 +871,7 @@ class ShellTools(Skill):
             ):
                 new_text += "\n"
             new_content = "".join(before) + new_text + "".join(after)
-            resolved.write_text(new_content)
+            resolved.write_text(new_content, encoding="utf-8", newline=ending)
 
             diff = f"--- a/{target.path}\n+++ b/{target.path}\n"
             diff += f"@@ -{target.start},{target.end - target.start + 1} @@\n"
@@ -866,7 +890,7 @@ class ShellTools(Skill):
                 )
             old_text = old_or_new
             resolved = self._resolve_path(target)
-            content = resolved.read_text()
+            content, ending = _read_text(resolved)
 
             count = content.count(old_text)
             if count == 0:
@@ -881,7 +905,7 @@ class ShellTools(Skill):
                 )
 
             new_content = content.replace(old_text, new, 1)
-            resolved.write_text(new_content)
+            resolved.write_text(new_content, encoding="utf-8", newline=ending)
 
             return FileWrite(
                 path=target,
@@ -906,7 +930,7 @@ class ShellTools(Skill):
         """
         resolved = self._resolve_path(path)
         resolved.parent.mkdir(parents=True, exist_ok=True)
-        resolved.write_text(content)
+        resolved.write_text(content, encoding="utf-8", newline="")
         line_count = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
         return FileWrite(
             path=path,

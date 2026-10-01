@@ -3,6 +3,7 @@
 """Registry-based editing and credential selection never need discovery."""
 
 import os
+import sys
 
 import pytest
 import yaml
@@ -35,7 +36,7 @@ def registry(tmp_path, monkeypatch):
         "custom_metadata": "keep me",
         "cache_breakpoint": None,
     }
-    path.write_text(yaml.safe_dump({"models": {"saved": entry}}))
+    path.write_text(yaml.safe_dump({"models": {"saved": entry}}), encoding="utf-8")
     monkeypatch.setattr(llm_config, "llm_config_chain", lambda: [path])
     monkeypatch.setenv("NEMO_OO_USER_DIR", str(tmp_path))
     monkeypatch.setenv("EDIT_TEST_KEY", "test-key")
@@ -68,7 +69,7 @@ def test_edit_jumps_to_settings_preserving_custom_fields(registry, monkeypatch, 
         input=("saved\n" if not selector else "") + "use\ny\ny\n",
     )
     assert result.exit_code == 0, result.output
-    actual = yaml.safe_load(path.read_text())["models"]["saved"]
+    actual = yaml.safe_load(path.read_text(encoding="utf-8"))["models"]["saved"]
     assert actual["context_window"] == 64000
     for key in (
         "model_name",
@@ -115,7 +116,7 @@ def test_endpoint_reuses_saved_variable_unless_explicit(registry, explicit):
         argv += ["--api-key-env", "EXPLICIT_KEY"]
     result = CliRunner().invoke(command, argv)
     assert result.exit_code == 0, result.output
-    entry = yaml.safe_load(path.read_text())["models"]["new-alias"]
+    entry = yaml.safe_load(path.read_text(encoding="utf-8"))["models"]["new-alias"]
     assert entry["api_key_env"] == ("EXPLICIT_KEY" if explicit else "EDIT_TEST_KEY")
     assert "test-key" not in result.output
 
@@ -146,9 +147,12 @@ def test_pasted_key_is_saved_only_with_separate_consent(registry, monkeypatch, c
     secret = path.with_name("secrets.yaml")
     assert secret.exists() == (choice == "y")
     if choice == "y":
-        assert yaml.safe_load(secret.read_text()) == {"env": {"NEW_TEST_KEY": "private-value"}}
-        assert secret.stat().st_mode & 0o777 == 0o600
-    assert "private-value" not in result.output + path.read_text()
+        assert yaml.safe_load(secret.read_text(encoding="utf-8")) == {
+            "env": {"NEW_TEST_KEY": "private-value"}
+        }
+        if sys.platform != "win32":  # Windows has no Unix permission bits
+            assert secret.stat().st_mode & 0o777 == 0o600
+    assert "private-value" not in result.output + path.read_text(encoding="utf-8")
     assert "NEW_TEST_KEY" not in os.environ
 
 
@@ -264,5 +268,5 @@ def test_edit_model_with_working_dir_warns_when_source_is_not_the_target(
     assert "Editing saved from" in normalized_output
     assert "does not define" in normalized_output and "yet" in normalized_output
     assert "copying it in from" in normalized_output
-    saved = yaml.safe_load((target / ".nooa" / "llm_config.yaml").read_text())
+    saved = yaml.safe_load((target / ".nooa" / "llm_config.yaml").read_text(encoding="utf-8"))
     assert saved["models"]["saved"]["model_name"] == "openai/vendor/model"

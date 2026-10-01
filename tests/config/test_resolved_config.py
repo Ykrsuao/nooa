@@ -63,7 +63,9 @@ class TestResolvedConfig:
         assert isinstance(rc.secrets, Secrets)
 
     def test_secret_values_masked_on_print_and_dump(self, _isolate):
-        (_isolate / "secrets.yaml").write_text("env:\n  NVIDIA_INTERNAL_API_KEY: sk-supersecret\n")
+        (_isolate / "secrets.yaml").write_text(
+            "env:\n  NVIDIA_INTERNAL_API_KEY: sk-supersecret\n", encoding="utf-8"
+        )
         rc = resolved_config()
         # SecretStr masks on str/repr/model_dump(_json) — no plaintext leak.
         assert "sk-supersecret" not in str(rc)
@@ -71,12 +73,12 @@ class TestResolvedConfig:
         assert "sk-supersecret" not in rc.model_dump_json()
 
     def test_plaintext_via_get_secret_value(self, _isolate):
-        (_isolate / "secrets.yaml").write_text("env:\n  K: realvalue\n")
+        (_isolate / "secrets.yaml").write_text("env:\n  K: realvalue\n", encoding="utf-8")
         rc = resolved_config()
         assert rc.secrets.env["K"].get_secret_value() == "realvalue"
 
     def test_settings_carried_as_dict(self, _isolate):
-        (_isolate / "settings.yaml").write_text("tui:\n  default_model: foo\n")
+        (_isolate / "settings.yaml").write_text("tui:\n  default_model: foo\n", encoding="utf-8")
         rc = resolved_config()
         assert rc.settings == {"tui": {"default_model": "foo"}}
 
@@ -86,7 +88,8 @@ class TestResolvedConfig:
             "  m1:\n"
             "    model_name: openai/x\n"
             "    api_base: https://api.openai.com/v1\n"
-            "    api_key_env: OPENAI_API_KEY\n"
+            "    api_key_env: OPENAI_API_KEY\n",
+            encoding="utf-8",
         )
         rc = resolved_config()
         assert isinstance(rc.models["m1"], ModelConfig)
@@ -95,14 +98,16 @@ class TestResolvedConfig:
 
     def test_sources_lists_winning_files(self, _isolate, monkeypatch):
         s = _isolate / "settings.yaml"
-        s.write_text("tui: {}\n")
+        s.write_text("tui: {}\n", encoding="utf-8")
         rc = resolved_config()
         assert str(s.resolve()) in rc.sources["settings"]
 
 
 class TestGetModelConfig:
     def test_known_alias(self, _isolate):
-        (_isolate / "llm_config.yaml").write_text("models:\n  a:\n    model_name: openai/m\n")
+        (_isolate / "llm_config.yaml").write_text(
+            "models:\n  a:\n    model_name: openai/m\n", encoding="utf-8"
+        )
         from nooa.llm_config import llm_config_chain
         from nooa.unifiedllm import reload_registry
 

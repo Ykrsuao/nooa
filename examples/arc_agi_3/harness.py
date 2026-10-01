@@ -234,7 +234,7 @@ class ActionReader:
     def next_batch(self, timeout: float) -> dict | None:
         t0 = time.time()
         while True:
-            with self.path.open() as f:
+            with self.path.open(encoding="utf-8") as f:
                 f.seek(self._pos)
                 line = f.readline()
                 if line and line.endswith("\n"):
@@ -377,7 +377,7 @@ def main() -> int:
         summary = build_event_summary(action_results, args.event_prompt)
         if summary:
             entry["event_summary"] = summary
-        with states_path.open("a") as f:
+        with states_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry) + "\n")
 
     write_state(

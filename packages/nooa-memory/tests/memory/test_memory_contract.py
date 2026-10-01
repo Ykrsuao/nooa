@@ -121,9 +121,13 @@ def test_update_and_forget_accept_id_prefix(agent):
     mgr = _install(agent)
     mid = agent.remember("the retry limit is 3", type="info")
     assert agent.update_memory(mid[:8], content="the retry limit is 5") is True
-    assert mgr.store.get(mid).content == "the retry limit is 5"
+    got = mgr.store.get(mid)
+    assert got is not None
+    assert got.content == "the retry limit is 5"
     assert agent.forget(mid[:8]) is True
-    assert mgr.store.get(mid).archived is True
+    got = mgr.store.get(mid)
+    assert got is not None
+    assert got.archived is True
 
 
 def test_ambiguous_prefix_raises(agent):

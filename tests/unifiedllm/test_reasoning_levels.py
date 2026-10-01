@@ -330,7 +330,7 @@ async def test_model_configuration_skill_reasoning_example(tmp_path, monkeypatch
     declarations = re.findall(r"```yaml\n(.*?)```", skill, re.DOTALL)
     assert len(declarations) == 1, "Provide one executable reasoning registry example"
     config = yaml.safe_load(declarations[0])["models"]["my-route"]
-    (tmp_path / "llm_config.yaml").write_text(declarations[0])
+    (tmp_path / "llm_config.yaml").write_text(declarations[0], encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(registry, "MODELS", {})
     monkeypatch.setattr(registry, "_loaded", False)

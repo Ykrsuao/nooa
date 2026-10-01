@@ -43,7 +43,8 @@ class TestLoadConfigWithDictModels:
     def test_loads_dict_modelspec(self, tmp_path):
         """Dict-format models are parsed into ModelSpec objects."""
         config_file = tmp_path / "config.yaml"
-        config_file.write_text("""
+        config_file.write_text(
+            """
 name: test_eval
 models:
   gpt-4:
@@ -53,7 +54,9 @@ models:
     max_tokens: 8192
 
 test_suite: []
-""")
+""",
+            encoding="utf-8",
+        )
         config = load_config(config_file)
 
         assert len(config.models) == 1
@@ -69,7 +72,8 @@ test_suite: []
     def test_loads_multiple_dict_modelspecs(self, tmp_path):
         """Multiple dict models are all loaded."""
         config_file = tmp_path / "config.yaml"
-        config_file.write_text("""
+        config_file.write_text(
+            """
 name: test_eval
 models:
   gpt-4:
@@ -88,7 +92,9 @@ models:
     api_key_env: NVIDIA_API_KEY
 
 test_suite: []
-""")
+""",
+            encoding="utf-8",
+        )
         config = load_config(config_file)
 
         assert len(config.models) == 3
@@ -100,7 +106,8 @@ test_suite: []
     def test_agent_models_list(self, tmp_path):
         """agent_models specifies which models to use for agents."""
         config_file = tmp_path / "config.yaml"
-        config_file.write_text("""
+        config_file.write_text(
+            """
 name: test_eval
 models:
   gpt-4:
@@ -122,7 +129,9 @@ agent_models:
   - claude-3
 
 test_suite: []
-""")
+""",
+            encoding="utf-8",
+        )
         config = load_config(config_file)
 
         # All 3 models available
@@ -133,7 +142,8 @@ test_suite: []
     def test_agent_models_defaults_to_all(self, tmp_path):
         """Without agent_models, all models are used."""
         config_file = tmp_path / "config.yaml"
-        config_file.write_text("""
+        config_file.write_text(
+            """
 name: test_eval
 models:
   gpt-4:
@@ -146,7 +156,9 @@ models:
     api_key_env: ANTHROPIC_API_KEY
 
 test_suite: []
-""")
+""",
+            encoding="utf-8",
+        )
         config = load_config(config_file)
 
         # Without agent_models, defaults to all model keys
@@ -155,10 +167,13 @@ test_suite: []
     def test_config_without_models(self, tmp_path):
         """Config without models has empty dict."""
         config_file = tmp_path / "config.yaml"
-        config_file.write_text("""
+        config_file.write_text(
+            """
 name: test_eval
 test_suite: []
-""")
+""",
+            encoding="utf-8",
+        )
         config = load_config(config_file)
 
         assert config.models == {}
@@ -167,7 +182,8 @@ test_suite: []
     def test_dict_spec_preserves_all_fields(self, tmp_path):
         """All ModelSpec fields are preserved from dict YAML."""
         config_file = tmp_path / "config.yaml"
-        config_file.write_text("""
+        config_file.write_text(
+            """
 name: test_eval
 models:
   my-model:
@@ -177,7 +193,9 @@ models:
     max_tokens: 16384
 
 test_suite: []
-""")
+""",
+            encoding="utf-8",
+        )
         config = load_config(config_file)
 
         model = config.models["my-model"]

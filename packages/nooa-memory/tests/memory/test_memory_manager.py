@@ -151,7 +151,9 @@ def test_remember_dedups_on_write(agent):
     id2 = agent.remember("identical fact about shipping releases", type="info")
     assert id1 == id2  # NOOP: reinforced the existing memory
     assert mgr.store.count() == 1
-    assert mgr.store.get(id1).reinforcement_count >= 1
+    got = mgr.store.get(id1)
+    assert got is not None
+    assert got.reinforcement_count >= 1
 
 
 # --------------------------------------------------------------------------

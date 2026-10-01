@@ -28,10 +28,10 @@ class _FakeShell:
         from nooa.tools._results import EditResult
 
         p = Path(path)
-        content = p.read_text()
+        content = p.read_text(encoding="utf-8")
         if content.count(old_str) != 1:
             return EditResult(path=path, diff="", success=False, error="not unique")
-        p.write_text(content.replace(old_str, new_str, 1))
+        p.write_text(content.replace(old_str, new_str, 1), encoding="utf-8")
         return EditResult(path=path, diff=f"-{old_str}\n+{new_str}", success=True)
 
     async def grep(self, pattern, path=".", **kwargs):
@@ -43,6 +43,7 @@ class _FakeShell:
             ["grep", "-rn", pattern, path],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=10,
         )
         lines = [line for line in r.stdout.strip().split("\n") if line]
@@ -57,24 +58,21 @@ class _FakeShell:
             ["find", path, "-name", pattern, "-not", "-path", "*/.*"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=10,
         )
         lines = sorted(line for line in r.stdout.strip().split("\n") if line)
         return SearchResult(matches=lines, total_matches=len(lines))
 
     async def run(self, command, timeout=120.0):
-        import subprocess
-
+        from nooa.tools._bash_session import BashSession
         from nooa.tools._results import RunResult
 
-        r = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        return RunResult(stdout=r.stdout.strip(), stderr=r.stderr.strip(), returncode=r.returncode)
+        # Commands are bash syntax, as ShellTools runs them; shell=True would be
+        # cmd.exe on Windows.
+        async with BashSession() as session:
+            stdout, stderr, code = await session.run(command, timeout=timeout)
+        return RunResult(stdout=stdout, stderr=stderr, returncode=code)
 
 
 class _FakeAgent:
@@ -109,9 +107,11 @@ def _make_lib_dir(
     lib_dir = tmp_path / lib_name
     lib_dir.mkdir()
     pyproject = f'[project]\nname = "{lib_name}"\nversion = "0.1.0"\ndependencies = []\n'
-    (lib_dir / "pyproject.toml").write_text(pyproject)
-    (lib_dir / "__init__.py").write_text(f'"""{description}"""\nfrom .{lib_name} import *\n')
-    (lib_dir / f"{lib_name}.py").write_text(source)
+    (lib_dir / "pyproject.toml").write_text(pyproject, encoding="utf-8")
+    (lib_dir / "__init__.py").write_text(
+        f'"""{description}"""\nfrom .{lib_name} import *\n', encoding="utf-8"
+    )
+    (lib_dir / f"{lib_name}.py").write_text(source, encoding="utf-8")
     if str(tmp_path) not in sys.path:
         sys.path.insert(0, str(tmp_path))
     return lib_dir
@@ -160,7 +160,7 @@ def test_import_module_cache_busts(tmp_path: Path):
     mgr = LibraryManager(agent, tmp_path)
     mgr._import_module(lib_dir)
 
-    (lib_dir / "ts_reload.py").write_text("def add(a, b): return a + b + 99\n")
+    (lib_dir / "ts_reload.py").write_text("def add(a, b): return a + b + 99\n", encoding="utf-8")
     mgr._import_module(lib_dir)
 
     assert sys.modules["ts_reload"].add(0, 0) == 99
@@ -231,8 +231,8 @@ def test_library_manager_install_skips_bad_library(tmp_path: Path):
     """install() logs a warning and continues when a library fails to import."""
     bad = tmp_path / "lm_bad"
     bad.mkdir()
-    (bad / "pyproject.toml").write_text('[project]\nname = "lm_bad"\n')
-    (bad / "__init__.py").write_text("raise RuntimeError('broken')\n")
+    (bad / "pyproject.toml").write_text('[project]\nname = "lm_bad"\n', encoding="utf-8")
+    (bad / "__init__.py").write_text("raise RuntimeError('broken')\n", encoding="utf-8")
     _make_lib_dir(tmp_path, "lm_good", SIMPLE_SOURCE)
 
     agent = _make_agent()
@@ -247,7 +247,7 @@ def test_library_manager_reload(tmp_path: Path):
     agent = _make_agent()
     mgr = LibraryManager.install(agent, libs_dir=tmp_path)
 
-    (lib_dir / "lm_reload.py").write_text("def add(a, b): return a + b + 100\n")
+    (lib_dir / "lm_reload.py").write_text("def add(a, b): return a + b + 100\n", encoding="utf-8")
     mgr._reload("lm_reload")
 
     assert sys.modules["lm_reload"].add(1, 2) == 103
@@ -260,8 +260,8 @@ def test_library_manager_reload_all(tmp_path: Path):
     agent = _make_agent()
     mgr = LibraryManager.install(agent, libs_dir=tmp_path)
 
-    (dir_a / "lm_all_a.py").write_text("def add(a, b): return a + b + 10\n")
-    (dir_b / "lm_all_b.py").write_text("def add(a, b): return a + b + 20\n")
+    (dir_a / "lm_all_a.py").write_text("def add(a, b): return a + b + 10\n", encoding="utf-8")
+    (dir_b / "lm_all_b.py").write_text("def add(a, b): return a + b + 20\n", encoding="utf-8")
     mgr.reload()
 
     assert sys.modules["lm_all_a"].add(0, 0) == 10
@@ -279,11 +279,11 @@ async def test_create_writes_pyproject_and_init(tmp_path: Path):
     libs = SkillWriting(_make_agent(), path=tmp_path)
     await libs.create("mylib", DESCRIPTION)
 
-    pyproject = (tmp_path / "mylib" / "pyproject.toml").read_text()
+    pyproject = (tmp_path / "mylib" / "pyproject.toml").read_text(encoding="utf-8")
     assert 'name = "mylib"' in pyproject
     assert 'version = "0.1.0"' in pyproject
 
-    init_py = (tmp_path / "mylib" / "__init__.py").read_text()
+    init_py = (tmp_path / "mylib" / "__init__.py").read_text(encoding="utf-8")
     assert DESCRIPTION in init_py
     assert "from nooa.skill import Skill" in init_py
     assert "class Mylib(Skill):" in init_py
@@ -334,11 +334,11 @@ async def test_run_tests_passes(tmp_path: Path):
     """run_tests() on a library with a passing test returns output containing 'passed'."""
     libs = SkillWriting(_make_agent(), path=tmp_path)
     await libs.create("rt_math", DESCRIPTION)
-    (tmp_path / "rt_math" / "rt_math.py").write_text(SIMPLE_SOURCE)
+    (tmp_path / "rt_math" / "rt_math.py").write_text(SIMPLE_SOURCE, encoding="utf-8")
     tests_dir = tmp_path / "rt_math" / "tests"
     tests_dir.mkdir(parents=True, exist_ok=True)
     (tests_dir / "test_rt_math.py").write_text(
-        "from rt_math.rt_math import add\ndef test_add(): assert add(1, 2) == 3\n"
+        "from rt_math.rt_math import add\ndef test_add(): assert add(1, 2) == 3\n", encoding="utf-8"
     )
     output = await libs.run_tests("rt_math")
     assert "passed" in output.lower(), output
@@ -367,7 +367,7 @@ async def test_reload_reports_registry_failure(tmp_path: Path):
     agent.skills = _FailingSkills()
     libs = SkillWriting(agent, path=tmp_path)
     await libs.create("rl_fail", DESCRIPTION)
-    (tmp_path / "rl_fail" / "rl_fail.py").write_text(SIMPLE_SOURCE)
+    (tmp_path / "rl_fail" / "rl_fail.py").write_text(SIMPLE_SOURCE, encoding="utf-8")
 
     result = await libs.reload("rl_fail")
 
@@ -394,7 +394,7 @@ async def test_reload_reports_success(tmp_path: Path):
     agent.skills = _OkSkills()
     libs = SkillWriting(agent, path=tmp_path)
     await libs.create("rl_ok", DESCRIPTION)
-    (tmp_path / "rl_ok" / "rl_ok.py").write_text(SIMPLE_SOURCE)
+    (tmp_path / "rl_ok" / "rl_ok.py").write_text(SIMPLE_SOURCE, encoding="utf-8")
 
     result = await libs.reload("rl_ok")
 

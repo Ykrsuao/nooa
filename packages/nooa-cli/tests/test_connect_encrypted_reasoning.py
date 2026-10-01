@@ -165,6 +165,6 @@ def test_wizard_explains_and_saves_default_without_extra_question(tmp_path):
     assert result.exit_code == 0, result.output
     assert "encrypted reasoning" in result.output
     assert "not to store replies" in result.output
-    entry = yaml.safe_load(target.read_text())["models"]["local"]
+    entry = yaml.safe_load(target.read_text(encoding="utf-8"))["models"]["local"]
     assert entry["include"] == ["reasoning.encrypted_content"]
     assert "provenance" not in entry

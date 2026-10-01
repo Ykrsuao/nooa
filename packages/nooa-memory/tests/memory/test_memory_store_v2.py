@@ -90,7 +90,9 @@ def test_v1_file_migrates_in_place(tmp_path, emb):
     assert got.status is None
     # new writes with owner work on the migrated file
     m = _add(store, emb, "post-migration memory", owner="alice")
-    assert store.get(m.id).owner == "alice"
+    got = store.get(m.id)
+    assert got is not None
+    assert got.owner == "alice"
     store.close()
 
 
@@ -120,10 +122,13 @@ def test_owner_roundtrip(emb):
     store = MemoryStore(":memory:")
     m = _add(store, emb, "alice's fact", owner="alice")
     got = store.get(m.id)
+    assert got is not None
     assert got.owner == "alice"
     got.owner = "alice"  # save() keeps the column in sync
     store.save(got)
-    assert store.get(m.id).owner == "alice"
+    got = store.get(m.id)
+    assert got is not None
+    assert got.owner == "alice"
     store.close()
 
 
@@ -203,9 +208,10 @@ def test_rename_owner_restamps_rows(emb):
     keep = _add(store, emb, "someone else's row", owner="bob")
 
     assert store.rename_owner("pkg.module:TUIAgent", "TUIAgent") == 2
-    assert store.get(a.id).owner == "TUIAgent"
-    assert store.get(b.id).owner == "TUIAgent"
-    assert store.get(keep.id).owner == "bob"
+    for memory, owner in ((a, "TUIAgent"), (b, "TUIAgent"), (keep, "bob")):
+        got = store.get(memory.id)
+        assert got is not None
+        assert got.owner == owner
     # idempotent: nothing left under the old spelling
     assert store.rename_owner("pkg.module:TUIAgent", "TUIAgent") == 0
     store.close()

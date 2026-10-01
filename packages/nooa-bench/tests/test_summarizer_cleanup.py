@@ -3,6 +3,7 @@
 """Agent shutdown drains installed background summaries before releasing resources."""
 
 import asyncio
+from typing import NoReturn
 from unittest.mock import AsyncMock
 
 import pytest
@@ -12,7 +13,7 @@ from nooa_bench.rlm_bench_agent import RLMBenchAgent
 from nooa.events import Message
 from nooa.interactive import SummarizationConfig
 from nooa.runtime.middleware import LLMCallContext
-from nooa.unifiedllm import FakeLLMClient, LLMResponse, LLMUsage
+from nooa.unifiedllm import AssistantText, FakeLLMClient, LLMResponse, LLMUsage
 
 
 @pytest.mark.asyncio
@@ -36,10 +37,11 @@ async def test_close_drains_pending_summary_before_shell_and_shared_client(
     original_shell_close = agent.shell.close
     closed = []
 
-    async def summary_call(*args, **kwargs):
+    async def summary_call(*args, **kwargs) -> NoReturn:
         entered.set()
         try:
             await asyncio.Event().wait()
+            raise AssertionError("the blocked summary must be cancelled")
         finally:
             # Include asynchronous cleanup, not only immediate cancellation.
             cleaning.set()
@@ -69,7 +71,9 @@ async def test_close_drains_pending_summary_before_shell_and_shared_client(
     )
 
     async def complete(request):
-        request.response = LLMResponse(content="parent", usage=LLMUsage(input_tokens=1000))
+        request.response = LLMResponse(
+            parts=(AssistantText(text="parent"),), usage=LLMUsage(input_tokens=1000)
+        )
         return request
 
     try:

@@ -40,7 +40,7 @@ def _traceback_from_helper(run_dir: Path) -> str:
     helpers = run_dir / "team_nemo" / "shared" / "helpers"
     helpers.mkdir(parents=True, exist_ok=True)
     helper = helpers / "model.py"
-    helper.write_text(_HELPER_SRC)  # write_helper
+    helper.write_text(_HELPER_SRC, encoding="utf-8")  # write_helper
 
     # load_helpers: exact same import path the agent uses.
     spec = importlib.util.spec_from_file_location("arc_helper_model", helper)

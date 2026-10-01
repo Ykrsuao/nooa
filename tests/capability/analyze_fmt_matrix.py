@@ -66,7 +66,7 @@ def parse_test_name(name: str) -> tuple[str, str, str] | None:
 def load_results(results_dir: Path) -> list[dict]:
     rows = []
     for path in results_dir.rglob("*.noo-eval.jsonl"):
-        with path.open() as f:
+        with path.open(encoding="utf-8") as f:
             for line in f:
                 d = json.loads(line)
                 if d.get("_type") != "result":

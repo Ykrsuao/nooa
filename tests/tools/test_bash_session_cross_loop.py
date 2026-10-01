@@ -102,6 +102,8 @@ async def test_bash_session_survives_loop_change():
     # This is the assertion that currently FAILS (RuntimeError: Future attached to different loop)
     assert loop_b_error is None, f"Loop B failed (cross-loop bug): {loop_b_error}"
     assert loop_b_result == "loop_b_ok"
+    thread_b.join(timeout=5)
+    assert not thread_b.is_alive(), "Loop B cleanup did not finish"
 
 
 async def test_bash_session_works_same_loop():

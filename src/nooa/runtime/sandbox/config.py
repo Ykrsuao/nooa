@@ -30,7 +30,7 @@ FileAccess = Literal["read", "read_write"]
 class FileRule(BaseModel):
     """An explicit filesystem allow rule: grant ``access`` beneath ``path``."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid", revalidate_instances="always")
 
     path: str
     access: FileAccess = "read"
@@ -45,7 +45,7 @@ class SandboxConfig(BaseModel):
     ``CodeActConfig.execution_backend == "sandbox"``.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid", revalidate_instances="always")
 
     # --- guardrail 3: filesystem ------------------------------------------
     filesystem: bool = Field(
@@ -103,8 +103,8 @@ class SandboxConfig(BaseModel):
     )
 
     # --- process / lifecycle ----------------------------------------------
-    # Only "fork" is supported: the worker init inherits the live agent, the
-    # CurrentCall and the return_result closure, none of which pickle for "spawn".
+    # The public sandbox still requires fork. The internal Windows spawn/IPC
+    # experiment has no filesystem/network/parent isolation and is not selectable.
     start_method: Literal["fork"] = Field(
         default="fork", description="multiprocessing start method for the worker (fork only)."
     )

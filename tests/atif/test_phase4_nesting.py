@@ -104,7 +104,7 @@ async def test_case_b_same_agent_nested_flattens(tmp_path: Path) -> None:
         result = await agent.outer("hi")
 
     assert result == "a"
-    loaded = Trajectory.model_validate_json(out.read_text())
+    loaded = Trajectory.model_validate_json(out.read_text(encoding="utf-8"))
     assert_atif_normative(loaded)
 
     # subagent_trajectories[] should be EMPTY — Case B flattens.
@@ -174,7 +174,7 @@ async def test_case_c_standalone_embeds_subagent(tmp_path: Path) -> None:
         result = await agent.run("classify 'great'")
 
     assert result == "pos"
-    loaded = Trajectory.model_validate_json(out.read_text())
+    loaded = Trajectory.model_validate_json(out.read_text(encoding="utf-8"))
     assert_atif_normative(loaded)
 
     # Exactly one child trajectory under subagent_trajectories[].
@@ -248,7 +248,7 @@ async def test_case_d2_gather_over_standalones_yields_n_subagents(tmp_path: Path
         result = await agent.run(["x", "y", "z"])
 
     assert result == ["pos", "neg", "neu"]
-    loaded = Trajectory.model_validate_json(out.read_text())
+    loaded = Trajectory.model_validate_json(out.read_text(encoding="utf-8"))
     assert_atif_normative(loaded)
 
     # Three concurrent standalones → three subagent trajectories.
@@ -321,7 +321,7 @@ def test_multimodal_task_image_rendered_as_content_parts(tmp_path: Path) -> None
         )
     )
 
-    loaded = Trajectory.model_validate_json(exporter.path.read_text())
+    loaded = Trajectory.model_validate_json(exporter.path.read_text(encoding="utf-8"))
     assert_atif_normative(loaded)
 
     user_step = next(s for s in loaded.steps if s.source == "user")
@@ -368,7 +368,7 @@ def test_crash_mid_turn_writes_partial_then_marks(tmp_path: Path) -> None:
     # Simulate an exception inside the turn — atif_scope wraps this in production.
     exporter.finalize_on_exception(RuntimeError("boom"))
 
-    loaded = Trajectory.model_validate_json(exporter.path.read_text())
+    loaded = Trajectory.model_validate_json(exporter.path.read_text(encoding="utf-8"))
     # User step is on disk; agent step is not (turn never completed).
     assert [s.source for s in loaded.steps] == ["user"]
     assert loaded.extra is not None

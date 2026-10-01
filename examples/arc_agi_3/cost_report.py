@@ -25,7 +25,7 @@ def run_tokens(run_dir: Path) -> dict | None:
         return None
     tot = {"calls": 0, "prompt": 0, "cache_read": 0, "completion": 0, "reasoning": 0}
     for path in files:
-        for line in path.open():
+        for line in path.open(encoding="utf-8"):
             try:
                 doc = json.loads(line)
             except json.JSONDecodeError:

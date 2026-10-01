@@ -437,7 +437,7 @@ class SubmissionManager:
         }
         try:
             self.SUBMISSION_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-            with self.SUBMISSION_LOG_PATH.open("a") as f:
+            with self.SUBMISSION_LOG_PATH.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(record) + "\n")
         except OSError:
             pass

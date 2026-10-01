@@ -238,6 +238,8 @@ def project_turn(
     result: list[dict[str, Any]] = []
     for part in turn.parts:
         native = json_containers(part.native) if compatible and part.native is not None else None
+        if native is not None:
+            assert isinstance(native, dict)  # NativeJSON validates the outer object as a mapping.
         if isinstance(part, ToolCall):
             item = native or {"type": "function_call"}
             item.update(call_id=part.id, name=part.name, arguments=part.arguments)

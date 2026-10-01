@@ -12,7 +12,7 @@ from scripts.check_license_headers import source_python_files
 
 def _python_file(path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("print('test')\n")
+    path.write_text("print('test')\n", encoding="utf-8")
     return path
 
 
@@ -22,8 +22,8 @@ def _git(root: Path, *args: str) -> None:
 
 def test_source_files_follow_standard_git_excludes(tmp_path: Path) -> None:
     _git(tmp_path, "init")
-    (tmp_path / ".gitignore").write_text("/tmp/\n")
-    with (tmp_path / ".git" / "info" / "exclude").open("a") as exclude:
+    (tmp_path / ".gitignore").write_text("/tmp/\n", encoding="utf-8")
+    with (tmp_path / ".git" / "info" / "exclude").open("a", encoding="utf-8") as exclude:
         exclude.write("\n.codex/\n")
 
     tracked_source = _python_file(tmp_path / "src" / "tracked.py")
@@ -44,6 +44,6 @@ def test_source_files_include_tracked_files_that_match_ignore_rules(tmp_path: Pa
     _git(tmp_path, "init")
     tracked_source = _python_file(tmp_path / "generated" / "tracked.py")
     _git(tmp_path, "add", "generated/tracked.py")
-    (tmp_path / ".gitignore").write_text("/generated/\n")
+    (tmp_path / ".gitignore").write_text("/generated/\n", encoding="utf-8")
 
     assert tracked_source in source_python_files(tmp_path)

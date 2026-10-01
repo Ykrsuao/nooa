@@ -163,7 +163,9 @@ def test_hallucinated_ids_cannot_archive_unrelated_memories():
     victim = agent.remember("an unrelated fact about deployments", type="info")
 
     mgr.reflect_interruptible(lambda: False, trigger="idle")
-    assert mgr.store.get(victim).archived is False  # ids validated against the cluster
+    got = mgr.store.get(victim)
+    assert got is not None
+    assert got.archived is False  # ids validated against the cluster
 
 
 def test_cluster_cap_bounds_llm_calls():

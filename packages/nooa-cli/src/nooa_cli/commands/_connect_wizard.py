@@ -176,7 +176,7 @@ def select_connection(state: WizardState) -> bool:
             )
     state.data = {}
     if state.path.exists():
-        with state.path.open() as source:
+        with state.path.open(encoding="utf-8") as source:
             state.data = yaml.safe_load(source) or {}
     if isinstance(state.data, dict) and state.data.get("models") is None:
         state.data["models"] = {}
@@ -735,7 +735,7 @@ def configure_checks(state: WizardState) -> bool:
         if not state.levels_file:
             state.patches = {label: deepcopy(original_levels[label]) for label in labels}
     if state.levels_file:
-        with Path(state.levels_file).open() as source:
+        with Path(state.levels_file).open(encoding="utf-8") as source:
             state.patches = yaml.safe_load(source)
     if state.levels or state.reasoning_template:
         if not state.reasoning_template or not state.levels:
@@ -984,7 +984,7 @@ def save_model(state: WizardState) -> bool:
     # asking to replace an entry added since setup started.
     state.data = {}
     if state.path.exists():
-        with state.path.open() as source:
+        with state.path.open(encoding="utf-8") as source:
             state.data = yaml.safe_load(source) or {}
     if isinstance(state.data, dict) and state.data.get("models") is None:
         state.data["models"] = {}

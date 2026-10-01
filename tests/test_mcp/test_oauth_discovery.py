@@ -3,6 +3,7 @@
 """Tests for RFC 9728 OAuth authorization-server discovery in mcp/oauth.py."""
 
 import asyncio
+import sys
 import threading
 from urllib.parse import parse_qs, urlparse
 
@@ -333,8 +334,9 @@ def test_token_cache_roundtrip(tmp_path, monkeypatch):
 
     cache_file = tmp_path / ".nooa" / "mcp_tokens.json"
     assert cache_file.exists()
-    # Owner-only permissions (0o600).
-    assert (cache_file.stat().st_mode & 0o777) == 0o600
+    # Owner-only permissions (0o600); Windows has no Unix permission bits.
+    if sys.platform != "win32":
+        assert (cache_file.stat().st_mode & 0o777) == 0o600
 
 
 @pytest.mark.asyncio

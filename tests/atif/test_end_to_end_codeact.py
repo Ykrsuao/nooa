@@ -95,7 +95,7 @@ async def test_single_codeact_turn_end_to_end(tmp_path: Path) -> None:
     assert result == 2
 
     # File exists and parses through the schema.
-    loaded = Trajectory.model_validate_json(out.read_text())
+    loaded = Trajectory.model_validate_json(out.read_text(encoding="utf-8"))
     assert loaded.agent.name == "CodeActAgent"
     assert loaded.session_id == "end2end-1"
     # At least one user step (the Task) + one or more agent steps.
@@ -152,7 +152,7 @@ async def test_install_atif_returns_callable_uninstall(tmp_path: Path) -> None:
     finally:
         uninstall()
 
-    loaded = Trajectory.model_validate_json(out.read_text())
+    loaded = Trajectory.model_validate_json(out.read_text(encoding="utf-8"))
     assert_atif_normative(loaded)
 
 
@@ -181,7 +181,7 @@ async def test_crash_inside_scope_marks_trajectory(tmp_path: Path) -> None:
             await agent.run("ok")
             raise _Boom("scope-level error")
 
-    loaded = Trajectory.model_validate_json(out.read_text())
+    loaded = Trajectory.model_validate_json(out.read_text(encoding="utf-8"))
     assert loaded.extra is not None
     assert loaded.extra["crashed"] is True
     assert loaded.extra["exception_type"] == "_Boom"
@@ -213,7 +213,7 @@ async def test_observation_paired_end_to_end(tmp_path: Path) -> None:
     ):
         assert await agent.run("two-turn") == 10
 
-    loaded = Trajectory.model_validate_json(out.read_text())
+    loaded = Trajectory.model_validate_json(out.read_text(encoding="utf-8"))
     assert_atif_normative(loaded)
     # Every tool_call has a matching observation result.
     for step in loaded.steps:
@@ -289,7 +289,7 @@ async def test_canonical_call_id_used_when_both_ids_present(tmp_path: Path) -> N
     ):
         assert await agent.run("answer") == 42
 
-    loaded = Trajectory.model_validate_json(out.read_text())
+    loaded = Trajectory.model_validate_json(out.read_text(encoding="utf-8"))
     assert_atif_normative(loaded)
 
     # No fc_* leak ANYWHERE in the trajectory — every id we look at

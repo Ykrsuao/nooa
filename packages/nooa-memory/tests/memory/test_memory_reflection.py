@@ -115,8 +115,12 @@ def test_abstraction_with_reasoner_creates_skill_linked_to_episodes(store, emb):
 
 
 def test_reconsolidate_archives_stale_and_keeps_current(store, emb):
-    older = _add(store, emb, "my 5k personal best is 27:00", type=MemoryType.INFO)
-    _add(store, emb, "my 5k personal best is now 25:50", type=MemoryType.INFO)
+    # Consecutive writes can share a clock tick on Windows; chronology is input.
+    now = time.time()
+    older = _add(
+        store, emb, "my 5k personal best is 27:00", type=MemoryType.INFO, created_at=now - 60
+    )
+    _add(store, emb, "my 5k personal best is now 25:50", type=MemoryType.INFO, created_at=now)
 
     def reconciler(cluster):
         # cluster is oldest -> newest; supersede everything but the latest

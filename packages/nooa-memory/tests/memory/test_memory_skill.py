@@ -30,7 +30,7 @@ def test_attach_installs_manager_and_round_trips():
     agent = _bare_agent()
     skill = _skill()
     skill.attach(agent)
-    assert isinstance(agent._memory, MemoryManager)  # manager installed on the agent
+    assert isinstance(getattr(agent, "_memory", None), MemoryManager)
 
     mid = skill.remember("the deploy command is make ship", type="skill", importance="HIGH")
     assert mid

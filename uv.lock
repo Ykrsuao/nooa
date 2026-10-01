@@ -1443,6 +1443,7 @@ viewer = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "cryptography" },
     { name = "eval-pipeline" },
     { name = "fastapi" },
     { name = "httpx", extra = ["socks"] },
@@ -1509,6 +1510,7 @@ provides-extras = ["acp", "arc", "bench", "cli", "mcp", "memory", "nemo-relay", 
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "cryptography", specifier = ">=41.0" },
     { name = "eval-pipeline", editable = "util/eval_pipeline" },
     { name = "fastapi", specifier = ">=0.123.4" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.28.1" },

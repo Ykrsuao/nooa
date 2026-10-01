@@ -6,6 +6,8 @@ The numpy backend always runs; the others ``importorskip`` their optional
 dependency so the suite stays green whether or not they are installed.
 """
 
+from typing import Literal
+
 import numpy as np
 import pytest
 from nooa_memory import (
@@ -24,7 +26,8 @@ from nooa import Agent
 from nooa.unifiedllm import FakeLLMClient
 
 DIM = 64
-ALL_BACKENDS = ["numpy", "sqlite_vec", "chroma_embedded", "chroma_http"]
+Backend = Literal["numpy", "sqlite_vec", "chroma_embedded", "chroma_http"]
+ALL_BACKENDS: list[Backend] = ["numpy", "sqlite_vec", "chroma_embedded", "chroma_http"]
 
 
 def _require(backend: str) -> None:
@@ -36,7 +39,7 @@ def _require(backend: str) -> None:
         pytest.skip("chroma_http needs a running server")
 
 
-def _store(backend: str) -> MemoryStore:
+def _store(backend: Backend) -> MemoryStore:
     _require(backend)
     return MemoryStore(":memory:", vector_config=VectorConfig(backend=backend), embedding_dim=DIM)
 

@@ -13,7 +13,7 @@ from nooa_bench import runner
 async def test_circular_debug_value_does_not_prevent_success_or_verifier_answer(
     monkeypatch, tmp_path
 ):
-    from nooa.events import PythonOutput
+    from nooa.events import PythonOutput, ResultStatus
     from nooa.runtime.event_manager import EventManager
     from nooa.unifiedllm import FakeLLMClient
 
@@ -26,7 +26,10 @@ async def test_circular_debug_value_does_not_prevent_success_or_verifier_answer(
             self.event_manager = EventManager()
             self.event_manager.add(
                 PythonOutput(
-                    tool_call_id="c", execution_count=1, execution_status="complete", value=circular
+                    tool_call_id="c",
+                    execution_count=1,
+                    execution_status=ResultStatus.COMPLETE,
+                    value=circular,
                 )
             )
 
@@ -37,8 +40,8 @@ async def test_circular_debug_value_does_not_prevent_success_or_verifier_answer(
     monkeypatch.setattr(runner, "_import_agent_class", lambda _: FinishedAgent)
     monkeypatch.setattr("nooa.unifiedllm.get_llm_client", lambda *args, **kwargs: FakeLLMClient())
     monkeypatch.setattr(runner, "_write_answer", lambda result: answers.append(result["response"]))
-    (tmp_path / "trajectory.json").write_text("[]")
-    (tmp_path / "behavior.json").write_text('{"task_id": "previous-task"}')
+    (tmp_path / "trajectory.json").write_text("[]", encoding="utf-8")
+    (tmp_path / "behavior.json").write_text('{"task_id": "previous-task"}', encoding="utf-8")
     assert await runner._run("task", "model", "bench", None) == 0
     assert answers == ["verification-command"]
     assert (tmp_path / "result.json").exists()
@@ -210,9 +213,9 @@ async def test_runner_executes_delegation_and_preserves_provider_turns(
             self.requests = []
             self.close_count = 0
 
-        async def acall(self, messages, **kwargs):
+        async def acall(self, messages, tools=None, output_model=None, **kwargs):
             self.requests.append(list(messages))
-            return await super().acall(messages, **kwargs)
+            return await super().acall(messages, tools=tools, output_model=output_model, **kwargs)
 
         async def aclose(self):
             self.close_count += 1
@@ -274,10 +277,10 @@ async def test_runner_executes_delegation_and_preserves_provider_turns(
     )
     assert llm.call_count == 3
     assert llm.close_count == 1  # Worker cleanup must not close the shared client.
-    assert (tmp_path / "answer.txt").read_text() == "true"
-    result = json.loads((tmp_path / "logs/result.json").read_text())
+    assert (tmp_path / "answer.txt").read_text(encoding="utf-8") == "true"
+    result = json.loads((tmp_path / "logs/result.json").read_text(encoding="utf-8"))
     assert result["success"] is True
-    metrics = json.loads((tmp_path / "logs/behavior.json").read_text())
+    metrics = json.loads((tmp_path / "logs/behavior.json").read_text(encoding="utf-8"))
     # Only controller model cells are in this trajectory; prefill is excluded.
     # Worker cells live in their separate event managers.
     assert metrics["signals"]["python_cells"] == 2
@@ -303,4 +306,6 @@ async def test_runner_executes_delegation_and_preserves_provider_turns(
         isinstance(message, LLMResponse) and message.id == first.id for message in llm.requests[1]
     )
     assert "private-sentinel" in str(llm.requests[1])  # Ordinary input, no custom redaction.
-    assert "fixture-provider-state" not in (tmp_path / "logs/trajectory.json").read_text()
+    assert "fixture-provider-state" not in (tmp_path / "logs/trajectory.json").read_text(
+        encoding="utf-8"
+    )
