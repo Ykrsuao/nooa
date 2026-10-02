@@ -73,8 +73,8 @@ def per_memory_usage(
     """The Usage panel for one memory (TUI detail pane / viewer record detail)."""
     now = _now() if now is None else now
     last = memory.access_log[-1] if memory.access_log else None
-    ranked = [e for e in memory.access_log if e.rank is not None]
-    scored = [e for e in memory.access_log if e.score is not None]
+    ranked = [e.rank for e in memory.access_log if e.rank is not None]
+    scored = [e.score for e in memory.access_log if e.score is not None]
     return {
         "fetches": _fetches(memory),
         "recalled": memory.recalled_count,
@@ -86,8 +86,8 @@ def per_memory_usage(
         "last_ts": last.ts if last else None,
         "last_session_ref": last.session_ref if last else None,
         "last_trace_ref": last.trace_ref if last else None,
-        "mean_rank": round(sum(e.rank for e in ranked) / len(ranked), 2) if ranked else None,
-        "mean_score": round(sum(e.score for e in scored) / len(scored), 4) if scored else None,
+        "mean_rank": round(sum(ranked) / len(ranked), 2) if ranked else None,
+        "mean_score": round(sum(scored) / len(scored), 4) if scored else None,
         # Flag only on positive evidence (an injected entry still in the log
         # with no later deliberate use) — never when rotation makes it unknowable.
         "injected_never_used": memory.injected_count > 0 and _injected_then_used(memory) is False,

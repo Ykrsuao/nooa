@@ -102,8 +102,10 @@ def capture_chat_parts(message: Any, scope: str | None) -> tuple[AssistantPart, 
     # LiteLLM commonly exposes the same signed thinking as reasoning_content.
     # Keep the readable text once, on its authoritative reasoning parts.
     if reasoning and reasoning not in {
-        "".join(part.text for part in parts),
-        "\n".join(part.text for part in parts if part.text),
+        "".join(part.text for part in parts if isinstance(part, AssistantReasoning)),
+        "\n".join(
+            part.text for part in parts if isinstance(part, AssistantReasoning) and part.text
+        ),
     }:
         # Preserve the wire field, not another copy of its text. On compatible
         # Chat replay (notably DeepSeek tool turns) it is protocol data, not

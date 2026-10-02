@@ -148,11 +148,13 @@ def _public_json_default(value: Any) -> Any:
     """
     if isinstance(value, BaseModel):
         from nooa.agentdoc._visibility import is_hidden_field
+        from nooa.agentdoc.protocols import SupportsInstanceValues
 
         fields = type(value).model_fields
         values = (
             value.__instance_values__()
-            if callable(getattr(type(value), "__instance_values__", None))
+            if isinstance(value, SupportsInstanceValues)
+            and callable(getattr(type(value), "__instance_values__", None))
             else {name: getattr(value, name) for name in fields}
         )
         return {

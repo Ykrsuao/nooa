@@ -72,6 +72,8 @@ def install_tracing_bridge(manager: MemoryManager) -> list[Callable[[], None]]:
 
     def _handler_for(span_event_name: str) -> Callable[[object], None]:
         def handler(event: object) -> None:
+            if _ot_trace is None:
+                return
             span = _ot_trace.get_current_span()
             if not span.get_span_context().is_valid or not span.is_recording():
                 return

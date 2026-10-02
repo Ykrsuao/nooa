@@ -21,13 +21,13 @@ import stat
 import tempfile
 import time
 from collections import deque
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncGenerator, Mapping
 from contextlib import aclosing
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -36,6 +36,9 @@ import yaml
 from nooa.unifiedllm.limits import REPLY_CAP_KEYS
 
 from ._records import ProbeRecord, check_status, public_record
+
+if TYPE_CHECKING:
+    from nooa.llm_types import LLMResponse
 
 CATALOGUE_URL = "https://openrouter.ai/api/v1/models"
 # Effectively unlimited: no real check plan approaches this, so an unset
@@ -91,10 +94,10 @@ def _include_rejected(exc: Exception) -> bool:
     )
 
 
-def _disable_encrypted_reasoning(entry: dict, status: int) -> dict:
+def _disable_encrypted_reasoning(entry: dict, status: int) -> ProbeRecord:
     # Explicit empty include suppresses the runtime's native-endpoint default too.
     entry["include"] = []
-    record = {
+    record: ProbeRecord = {
         "source": "connect",
         "outcome": "rejected",
         "status_code": status,
@@ -372,7 +375,7 @@ async def discover(
                         or any(ord(c) < 32 for c in name)
                     ):
                         continue
-                    model = {"id": name}
+                    model: dict[str, Any] = {"id": name}
                     for field, candidates in (
                         (
                             "context_window",
@@ -718,7 +721,7 @@ def model_metadata(
     An input-only limit is a conservative context-management bound, not evidence
     of the model's total context size. Raw limits and their meanings stay visible.
     """
-    result = deepcopy(catalogue or {"id": model})
+    result: dict[str, Any] = deepcopy(catalogue or {"id": model})
     sources = result.setdefault("limit_sources", {})
     for field, value in (
         ("context_length", result.get("context_length")),
@@ -1057,7 +1060,9 @@ def plan(
     return ConnectPlan(alias, entry, tuple(probes), budget_tokens, estimate, price, session_checks)
 
 
-async def _run_probe(alias: str, entry: dict, probe: Probe, api_key: str | None):
+async def _run_probe(
+    alias: str, entry: dict, probe: Probe, api_key: str | None
+) -> tuple[LLMResponse, bool | None, str]:
     """Check the unsaved entry through the same client factory agents use.
 
     Configured probes retain the saved cap; timeouts and retries are bounded.
@@ -1076,6 +1081,7 @@ async def _run_probe(alias: str, entry: dict, probe: Probe, api_key: str | None)
     messages = params.pop("input" if entry["api_style"] == "responses" else "messages")
     if params.pop("tools", None):
         params["tools"] = [Tool(name="probe_tool", description="Echo a value", callable=probe_tool)]
+    settings: dict[str, Any] = {}
     if probe.name.startswith("level:"):
         label = probe.name.removeprefix("level:")
         settings = entry["reasoning_levels"][label]
@@ -1103,10 +1109,10 @@ async def _run_probe(alias: str, entry: dict, probe: Probe, api_key: str | None)
     settings_sent = []
     response_status = []
 
-    async def capture_status(response):
+    async def capture_status(response: httpx.Response) -> None:
         response_status.append(response.status_code)
 
-    async def capture(request):
+    async def capture(request: httpx.Request) -> None:
         from nooa.unifiedllm.connect._session import settings_on_wire
 
         expected = {k: v for k, v in probe.body.items() if k in REPLY_CAP_KEYS}
@@ -1117,8 +1123,12 @@ async def _run_probe(alias: str, entry: dict, probe: Probe, api_key: str | None)
             }
         settings_sent.append(settings_on_wire(expected, json.loads(request.content)))
 
-    hooks = client._http.httpx_async.event_hooks["request"]
-    response_hooks = client._http.httpx_async.event_hooks["response"]
+    http = client._http
+    if http is None:
+        await client.aclose()
+        raise RuntimeError("Connect probes require an instrumented HTTP client")
+    hooks = http.httpx_async.event_hooks["request"]
+    response_hooks = http.httpx_async.event_hooks["response"]
     hooks.append(capture)
     response_hooks.append(capture_status)
     try:
@@ -1131,7 +1141,7 @@ async def _run_probe(alias: str, entry: dict, probe: Probe, api_key: str | None)
         if response_status:
             # LiteLLM can label a malformed HTTP-200 response as a 422 error.
             # Keep the observed status distinct from that local translation.
-            exc._connect_http_status = response_status[-1]
+            vars(exc)["_connect_http_status"] = response_status[-1]
         raise
     finally:
         hooks.remove(capture)
@@ -1279,7 +1289,7 @@ async def run_steps(
     *,
     approved: Literal["all", "minimal", "none"],
     api_key: str | None = None,
-) -> AsyncIterator[ProbeUpdate | ConnectResult]:
+) -> AsyncGenerator[ProbeUpdate | ConnectResult, None]:
     """Execute approved probes without network retries or provider fallback.
 
     Minimal approval sends only the routing probe. Its failure stops all probes.
@@ -1294,7 +1304,7 @@ async def run_steps(
         raise ValueError("approved must be all, minimal or none")
     entry = configure_entry(proposal.entry)
     provenance = entry["provenance"]
-    records = provenance["probes"]
+    records: dict[str, ProbeRecord] = provenance["probes"]
     spent = 0
     stopped = False
     key = api_key
@@ -1307,7 +1317,7 @@ async def run_steps(
         probe = pending.popleft()
         if entry.get("include") == [] and "include" in probe.body:
             probe = replace(probe, body={**probe.body, "include": []})
-        previous = records.get(probe.name, {})
+        previous: ProbeRecord = records.get(probe.name, {})
         if (
             previous.get("outcome") == "accepted"
             and previous.get("request") == probe.body
@@ -1316,11 +1326,11 @@ async def run_steps(
         ):
             if probe.name == "routing" and entry.get("include"):
                 provenance.setdefault("encrypted_reasoning", {})["outcome"] = "accepted"
-            yield ProbeUpdate(
-                probe.name, {**deepcopy(previous), "reason": "previous result reused"}
-            )
+            reused = deepcopy(previous)
+            reused["reason"] = "previous result reused"
+            yield ProbeUpdate(probe.name, reused)
             continue
-        record: dict[str, Any] = {"outcome": "not_probed"}
+        record: ProbeRecord = {"outcome": "not_probed"}
         records[probe.name] = record
         if approved == "none" or approved == "minimal" and probe.name != "routing":
             record["reason"] = "not approved"
@@ -1513,6 +1523,7 @@ async def run_steps(
             if (
                 probe.name == "routing"
                 and entry.get("include") == ["reasoning.encrypted_content"]
+                and isinstance(status, int)
                 and _include_rejected(exc)
             ):
                 rejection = _disable_encrypted_reasoning(entry, status)
@@ -1571,7 +1582,7 @@ async def run_steps(
         if probe.name == "routing" and entry.get("include"):
             provenance.setdefault("encrypted_reasoning", {})["outcome"] = "accepted"
     provenance["requests_accepted"] = [
-        name for name, item in records.items() if item["outcome"] == "accepted"
+        name for name, item in records.items() if item.get("outcome") == "accepted"
     ]
     provenance["reasoning_observed"] = [
         name for name, item in records.items() if item.get("reasoning_observed")
@@ -1580,7 +1591,7 @@ async def run_steps(
     if proposal.session_checks:
         from nooa.unifiedllm.connect._session import session_steps
 
-        checks = {}
+        checks: dict[str, ProbeRecord] = {}
         provenance["session_checks"] = checks
         if approved != "all" or stopped:
             checks["session"] = {
@@ -1598,12 +1609,11 @@ async def run_steps(
                 )
             ) as steps:
                 async for update in steps:
-                    if update.outcome["outcome"] != "running":
+                    if update.outcome.get("outcome") != "running":
                         checks[update.name] = update.outcome
-                    if update.outcome.get("include_rejected"):
-                        rejection = _disable_encrypted_reasoning(
-                            entry, update.outcome["status_code"]
-                        )
+                    status = update.outcome.get("status_code")
+                    if update.outcome.get("include_rejected") and isinstance(status, int):
+                        rejection = _disable_encrypted_reasoning(entry, status)
                         yield ProbeUpdate("encrypted_reasoning", deepcopy(rejection))
                     yield update
             provenance["tokens_charged_to_budget"] += checks.get("session", {}).get(
@@ -1627,7 +1637,7 @@ async def check_interfaces(
     reasoning_template: str | None = None,
     reasoning_level: str = "medium",
     reasoning_output_tokens: int = DEFAULT_REASONING_OUTPUT_TOKENS,
-) -> AsyncIterator[ProbeUpdate | InterfaceResult]:
+) -> AsyncGenerator[ProbeUpdate | InterfaceResult, None]:
     """Try one routing request per interface, sharing one budget and no retries.
 
     The frontend warns before calling this paid operation. It can display each

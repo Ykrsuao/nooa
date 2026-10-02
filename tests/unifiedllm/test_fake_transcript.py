@@ -6,10 +6,12 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import FrozenInstanceError
+from typing import Any, cast
 
 import pytest
 from pydantic import BaseModel
 
+from nooa.llm_types import AssistantText, CacheBoundary, LLMUsage, ToolCall
 from nooa.unifiedllm import (
     FakeLLMClient,
     FakeLLMResponseExhaustedError,
@@ -27,7 +29,9 @@ class StructuredAnswer(BaseModel):
 
 def _response(content: str) -> LLMResponse:
     """Build a minimal scripted response."""
-    return LLMResponse(raw_response=None, content=content, finish_reason="stop")
+    return LLMResponse(
+        raw_response=None, parts=(AssistantText(text=content),), finish_reason="stop"
+    )
 
 
 def _tool(value: str) -> str:
@@ -47,7 +51,8 @@ class _NonCopyable:
 async def test_transcript_captures_detached_normalized_call() -> None:
     """Call records retain stable inputs, effective kwargs, and outcomes."""
     client = FakeLLMClient([_response("done")])
-    messages = [{"role": "user", "content": "before"}]
+    message = {"role": "user", "content": "before"}
+    messages: list[dict[str, Any] | LLMResponse | CacheBoundary] = [message]
     tools = [Tool(name="lookup", description="Look up a value", callable=_tool)]
     extra_body = {"metadata": {"labels": ["before"]}}
 
@@ -59,7 +64,7 @@ async def test_transcript_captures_detached_normalized_call() -> None:
         extra_body=extra_body,
     )
 
-    messages[0]["content"] = "after"
+    message["content"] = "after"
     tools[0].name = "changed"
     extra_body["metadata"]["labels"].append("after")
 
@@ -68,6 +73,7 @@ async def test_transcript_captures_detached_normalized_call() -> None:
     call = client.calls[0]
     assert call.index == 1
     assert call.messages[0]["content"] == "before"
+    assert call.tools is not None
     assert isinstance(call.tools[0], FakeLLMToolSnapshot)
     assert call.tools[0].name == "lookup"
     assert call.output_model is StructuredAnswer
@@ -78,10 +84,11 @@ async def test_transcript_captures_detached_normalized_call() -> None:
     assert call.response.content == "done"
     assert call.error is None
 
+    # Exercise forbidden writes through a dynamically typed caller.
     with pytest.raises(TypeError):
-        call.kwargs["temperature"] = 0.9
+        cast(Any, call.kwargs)["temperature"] = 0.9
     with pytest.raises(FrozenInstanceError):
-        call.index = 2
+        cast(Any, call).index = 2
 
 
 @pytest.mark.asyncio
@@ -123,6 +130,45 @@ def test_convenience_constructor_forwards_strict_mode() -> None:
     assert client.call([]).content == "only"
     with pytest.raises(FakeLLMResponseExhaustedError):
         client.call([])
+
+
+@pytest.mark.parametrize(
+    "factory", ["empty", "code", "message", "tool", "reasoning", "empty_reasoning"]
+)
+@pytest.mark.parametrize("async_call", [False, True])
+async def test_factories_preserve_canonical_response_parts(factory: str, async_call: bool) -> None:
+    content = "answer"
+    reasoning = None
+    calls = []
+    finish = "stop"
+    usage = LLMUsage(input_tokens=10, output_tokens=1, total_tokens=11)
+    if factory == "empty":
+        client = FakeLLMClient()
+        content, usage = "", None
+    elif factory == "code":
+        client = FakeLLMClient.with_code_responses([content])
+    elif factory == "message":
+        client = FakeLLMClient.simple_message(content)
+    elif factory == "tool":
+        client = FakeLLMClient.with_tool_call("run", {"x": 1})
+        content, finish = "", "tool_calls"
+        calls = [ToolCall(id="call_fake_123", name="run", arguments='{"x": 1}')]
+        usage = LLMUsage(input_tokens=10, output_tokens=5, total_tokens=15)
+    else:
+        reasoning = "think" if factory == "reasoning" else ""
+        client = FakeLLMClient.with_reasoning(reasoning, content)
+        usage = LLMUsage(input_tokens=15, output_tokens=10, total_tokens=25)
+
+    expected = LLMResponse.model_validate(
+        {"content": content, "tool_calls": calls, "reasoning": reasoning, "finish_reason": finish}
+    )
+    response = await client.acall([]) if async_call else client.call([])
+    assert response.parts == expected.parts
+    assert response.public_message() == expected.public_message()
+    assert response.finish_reason == expected.finish_reason
+    assert response.usage == usage
+    assert response.replay_scope is None
+    assert all(part.native is None for part in response.parts)
 
 
 def test_convenience_constructor_preserves_legacy_subclass_default() -> None:
@@ -204,9 +250,9 @@ async def test_concurrent_strict_exhaustion_records_every_attempt() -> None:
         return_exceptions=True,
     )
 
-    assert [response.content for response in results[:10]] == [
-        f"response-{index}" for index in range(10)
-    ]
+    for index, response in enumerate(results[:10]):
+        assert isinstance(response, LLMResponse)
+        assert response.content == f"response-{index}"
     assert all(isinstance(error, FakeLLMResponseExhaustedError) for error in results[10:])
     assert len(client.calls) == 50
     assert [call.index for call in client.calls] == list(range(1, 51))
@@ -217,7 +263,9 @@ async def test_concurrent_strict_exhaustion_records_every_attempt() -> None:
 def test_noncopyable_opaque_values_do_not_break_fake_calls() -> None:
     """Transcript capture remains best-effort for intentionally opaque leaves."""
     opaque = _NonCopyable()
-    response = LLMResponse(raw_response=opaque, content="done", finish_reason="stop")
+    response = LLMResponse(
+        raw_response=opaque, parts=(AssistantText(text="done"),), finish_reason="stop"
+    )
     client = FakeLLMClient([response])
 
     returned = client.call([], opaque=opaque)

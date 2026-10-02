@@ -5,9 +5,10 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Mapping
+from abc import ABCMeta
+from collections.abc import ItemsView, Iterable, Iterator, Mapping, ValuesView
 from functools import cached_property
-from typing import Annotated, Any, ClassVar, Literal, Protocol
+from typing import Annotated, Any, ClassVar, Literal, Protocol, Self, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
@@ -38,7 +39,8 @@ class CacheBoundary(BaseModel):
             raise KeyError(key)
         return getattr(self, key)
 
-    def __iter__(self):
+    # Public Mapping iteration yields keys; model_dump retains Pydantic serialization.
+    def __iter__(self) -> Iterator[str]:  # pyright: ignore[reportIncompatibleMethodOverride]
         return iter(type(self).model_fields)
 
     def __len__(self) -> int:
@@ -416,7 +418,8 @@ class LLMResponse(EventBase):
     def __getitem__(self, key: str) -> Any:
         return json_containers(self._public_projection[key])
 
-    def __iter__(self):
+    # Public Mapping iteration yields keys; model_dump retains Pydantic serialization.
+    def __iter__(self) -> Iterator[str]:  # pyright: ignore[reportIncompatibleMethodOverride]
         return iter(self._public_projection)
 
     def __len__(self) -> int:
@@ -428,11 +431,11 @@ class LLMResponse(EventBase):
     def keys(self):
         return self._public_projection.keys()
 
-    def items(self):
-        return Mapping.items(self)
+    def items(self) -> ItemsView[str, Any]:
+        return Mapping.items(cast(Mapping[str, Any], self))
 
-    def values(self):
-        return Mapping.values(self)
+    def values(self) -> ValuesView[Any]:
+        return Mapping.values(cast(Mapping[str, Any], self))
 
     def __contains__(self, key: object) -> bool:
         return key in self._public_projection
@@ -463,7 +466,7 @@ class LLMResponse(EventBase):
         """
         return self.model_copy(update={"parts": parts})
 
-    def model_copy(self, *, update=None, deep=False):
+    def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False) -> Self:
         # Pydantic's normal model_copy bypasses frozen fields and validation.
         # Metadata-only copies can share the turn; public edits cannot share
         # its native state, even when a caller uses model_copy directly.
@@ -486,12 +489,14 @@ class LLMResponse(EventBase):
             }
         result = super().model_copy(update=update, deep=deep)
         if update and "parts" in update:
-            result.__dict__.pop("_public_projection", None)
+            vars(result).pop("_public_projection", None)
         return result
 
     def replace_text(self, text: str) -> LLMResponse:
         """Replace visible text, retaining readable reasoning and public tool calls."""
-        parts = [part for part in self.parts if not isinstance(part, AssistantText)]
+        parts: list[AssistantPart] = [
+            part for part in self.parts if not isinstance(part, AssistantText)
+        ]
         parts.insert(0, AssistantText(text=text))
         return self.replace_parts(tuple(parts))
 
@@ -507,5 +512,5 @@ class LLMResponse(EventBase):
 
 # Register the public read-only protocol without replacing Pydantic's durable
 # model serializer. dict(response) is portable; model_dump() is an archive.
-Mapping.register(LLMResponse)
-Mapping.register(CacheBoundary)
+cast(ABCMeta, Mapping).register(LLMResponse)
+cast(ABCMeta, Mapping).register(CacheBoundary)

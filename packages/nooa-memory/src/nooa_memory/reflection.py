@@ -106,6 +106,7 @@ class ReflectionEngine:
             report.merged = self._merge_duplicates(should_stop)
 
         def _recon() -> None:
+            assert reconciler is not None
             report.reconciled, report.superseded = self._reconsolidate(reconciler, should_stop)
 
         def _edges() -> None:
@@ -115,6 +116,7 @@ class ReflectionEngine:
             report.rescored = self._rescore_importance(should_stop)
 
         def _abstract() -> None:
+            assert reasoner is not None
             report.created = self._abstract_episodes(reasoner, should_stop)
 
         def _prune() -> None:

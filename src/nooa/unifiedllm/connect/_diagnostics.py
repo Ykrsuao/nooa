@@ -7,13 +7,45 @@ import os
 import re
 from importlib import metadata
 from pathlib import Path
+from typing import Any, overload
+
+from ._records import ProbeRecord
 
 
-def scrub_report(value, *, api_key=None, api_key_env=None):
+@overload
+def scrub_report(
+    value: str, *, api_key: str | None = None, api_key_env: str | None = None
+) -> str: ...
+
+
+@overload
+def scrub_report(
+    value: dict[str, Any], *, api_key: str | None = None, api_key_env: str | None = None
+) -> dict[str, Any]: ...
+
+
+@overload
+def scrub_report(
+    value: list[Any] | tuple[Any, ...],
+    *,
+    api_key: str | None = None,
+    api_key_env: str | None = None,
+) -> list[Any]: ...
+
+
+@overload
+def scrub_report(
+    value: object, *, api_key: str | None = None, api_key_env: str | None = None
+) -> object: ...
+
+
+def scrub_report(
+    value: object, *, api_key: str | None = None, api_key_env: str | None = None
+) -> object:
     """Remove active credential values throughout a report, including mapping keys."""
     secrets = tuple(s for s in (api_key, os.environ.get(api_key_env or "")) if s)
 
-    def scrub(item):
+    def scrub(item: Any) -> Any:
         if isinstance(item, str):
             for secret in secrets:
                 item = item.replace(secret, "[redacted]")
@@ -75,10 +107,10 @@ def installation_context():
     return result
 
 
-def timeout_details(exc, *, deadline_expired=False):
+def timeout_details(exc: BaseException, *, deadline_expired: bool = False) -> ProbeRecord:
     """Inspect exception types, not provider messages (which may contain secrets)."""
     chain = []
-    current = exc
+    current: BaseException | None = exc
     while current is not None and len(chain) < 6 and type(current).__name__ not in chain:
         chain.append(type(current).__name__)
         current = current.__cause__ or current.__context__

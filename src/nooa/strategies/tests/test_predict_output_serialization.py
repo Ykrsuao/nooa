@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from nooa.config.strategy_config import PredictConfig
 from nooa.context_blocks import ResultStatus, ToolCallEvent
 from nooa.events import LLMResponse
+from nooa.llm_types import AssistantText
 from nooa.runtime.event_manager import EventManager
 from nooa.strategies.base import RuntimeServices
 from nooa.strategies.predict import PredictStrategy
@@ -23,7 +24,7 @@ def test_tool_call_mode_retains_llm_response_and_appends_predict_return_result()
     """The provider turn remains canonical when a synthetic result is appended."""
     strategy = PredictStrategy(PredictConfig(output_serialization="tool_call"))
     event_manager = EventManager()
-    output = LLMResponse(content='{"value":"hello"}')
+    output = LLMResponse(parts=(AssistantText(text='{"value":"hello"}'),))
     event_manager.add(output)
 
     strategy._append_tool_call(

@@ -26,7 +26,7 @@ import contextvars
 import json
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, overload
 
 from nooa.agent import Agent
 from nooa.agentdoc import hidden
@@ -54,6 +54,7 @@ if TYPE_CHECKING:
     from nooa.config.summarizer_config import MethodSummarizerConfig, TokenBudgetConfig
     from nooa.events import AfterTurn, EventBase
     from nooa.runtime.event_manager import EventManager
+    from nooa.runtime.middleware import LLMCallContext, LLMCallNext
     from nooa.unifiedllm import UnifiedLLM
 
 
@@ -185,7 +186,8 @@ class SummarizationAgent(Agent):
         override = self._summary_llm_override.get()
         if override is not None:
             return override
-        return self._target_agent.llm if self._inherits_parent_llm else self.llm
+        parent = self._target_agent
+        return parent.llm if self._inherits_parent_llm and parent is not None else self.llm
 
     @hidden
     @no_trace
@@ -366,13 +368,15 @@ class SummarizationAgent(Agent):
         summary_llm = self._summary_llm()
         override_token = self._summary_llm_override.set(summary_llm)
         try:
-            if history_markdown is None:
-                history_markdown = self._render_range_to_markdown(start_tag, end_tag)
-            logger.debug(
-                f"Scheduling summarization: {start_tag} -> {end_tag} "
-                f"({len(history_markdown)} chars)"
+            history: str = (
+                self._render_range_to_markdown(start_tag, end_tag)
+                if history_markdown is None
+                else history_markdown
             )
-            summary = await self.summarize(history_markdown, self.config.target_chars)
+            logger.debug(
+                f"Scheduling summarization: {start_tag} -> {end_tag} ({len(history)} chars)"
+            )
+            summary = await self.summarize(history, self.config.target_chars)
             self._pending_summary = summary
             logger.debug(
                 f"Summarization complete: {start_tag} -> {end_tag} (summary: {len(summary)} chars)"
@@ -550,7 +554,7 @@ class SummarizationAgent(Agent):
         char-approximate counter so the cap still applies when no counter is set.
         """
         llm = self._summary_llm()
-        counter = getattr(llm, "count_tokens", None)
+        counter: Callable[[str], int] | None = getattr(llm, "count_tokens", None)
         if callable(counter):
             return counter
         from nooa.token_counter import char_approximate_token_counter
@@ -573,6 +577,28 @@ class SummarizationAgent(Agent):
 # =============================================================================
 # Helper Functions
 # =============================================================================
+@overload
+def context_budget(
+    llm: Any,
+    percent: float = 0.8,
+    fallback: int = 100_000,
+    *,
+    request_params: dict[str, Any] | None = None,
+    fallback_reserve: int = 0,
+) -> int: ...
+
+
+@overload
+def context_budget(
+    llm: Any,
+    percent: float = 0.8,
+    fallback: int | None = 100_000,
+    *,
+    request_params: dict[str, Any] | None = None,
+    fallback_reserve: int = 0,
+) -> int | None: ...
+
+
 def context_budget(
     llm: Any,
     percent: float = 0.8,
@@ -652,6 +678,8 @@ class TokenBudgetSummarizer(SummarizationAgent):
     def _install(self) -> None:
         if self.target_event_manager is None:
             raise ValueError("Cannot install: target_event_manager is None")
+        if self._target_agent is None:
+            raise ValueError("Cannot install: target agent is None")
         self._unsub_before = self.target_event_manager.on("BeforeTurn", self._handle_before_turn)
         self._unsub_llm = self.target_event_manager.intercept("llm_call", self._fork_after_call)
         self._unsub_close = self.target_event_manager.on_close(self.aclose)
@@ -680,7 +708,7 @@ class TokenBudgetSummarizer(SummarizationAgent):
 
     @hidden
     @no_trace
-    async def _fork_after_call(self, ctx: Any, nxt: Any) -> Any:
+    async def _fork_after_call(self, ctx: "LLMCallContext", nxt: "LLMCallNext") -> "LLMCallContext":
         """Branch the completed request; never clone or execute the parent agent.
 
         The request already contains the parent tools, rendered history and live
@@ -689,13 +717,19 @@ class TokenBudgetSummarizer(SummarizationAgent):
         response and tool work produced by this turn must not be collapsed by a
         summary that never saw them.
         """
-        if _in_summary_fork.get() or self._pending_task is not None:
+        manager = self.target_event_manager
+        if manager is None or _in_summary_fork.get() or self._pending_task is not None:
             return await nxt(ctx)
-        tags = self.target_event_manager.keys()
+        tags = manager.keys()
         selected = tags[: -self.config.preserve_recent] if self.config.preserve_recent else tags
-        source = tuple((tag, self.target_event_manager[tag].id) for tag in selected)
+        source = tuple((tag, manager[tag].id) for tag in selected)
         ctx = await nxt(ctx)
         if self._automatic_context_budget and ctx.client is not None:
+            if ctx.runtime is None:
+                logger.warning(
+                    "Skipping summary fork: no runtime for the automatic input budget; history is unchanged."
+                )
+                return ctx
             budget = context_budget(
                 ctx.client,
                 self._automatic_context_budget_percent,
@@ -757,18 +791,27 @@ class TokenBudgetSummarizer(SummarizationAgent):
 
     @hidden
     @no_trace
-    async def _run_fork(self, ctx: Any) -> None:
+    async def _run_fork(self, ctx: "LLMCallContext") -> None:
         """Use the same policy chain; read a final answer without executing tools."""
+        from nooa.runtime.middleware import LLMCallContext
+
         token = _in_summary_fork.set(True)
         try:
+            manager = self.target_event_manager
+            if manager is None:
+                raise ValueError("Cannot run summary fork: target_event_manager is None")
 
-            async def dispatch(request: Any) -> Any:
+            async def dispatch(request: LLMCallContext) -> LLMCallContext:
+                if request.client is None:
+                    raise ValueError("Summary fork has no effective client")
                 params = dict(request.params)
                 params.setdefault("output_model", None)
                 request.response = await request.client.acall(request.messages, **params)
                 return request
 
-            result = await self.target_event_manager.run_middleware("llm_call", ctx, dispatch)
+            result = await manager.run_middleware("llm_call", ctx, dispatch)
+            if not isinstance(result, LLMCallContext):
+                raise TypeError("Summary middleware returned an invalid context")
             response = result.response
             if response is None:
                 raise ValueError("Summary middleware returned no response")

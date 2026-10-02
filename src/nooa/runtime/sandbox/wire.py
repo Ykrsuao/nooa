@@ -64,7 +64,10 @@ class Codec:
         self.types = dict(types or {})
 
     def dumps(self, value: Any) -> bytes:
-        return msgpack.packb(value, default=self._encode, strict_types=True)
+        data = msgpack.packb(value, default=self._encode, strict_types=True)
+        if not isinstance(data, bytes):
+            raise TypeError("msgpack did not return bytes")
+        return data
 
     def loads(self, data: bytes) -> Any:
         try:
@@ -107,13 +110,15 @@ class Codec:
             return self._ext(_PATH, str(obj))
         if isinstance(obj, uuid.UUID):
             return self._ext(_UUID, obj.bytes)
-        np = sys.modules.get("numpy")
-        if np is not None and isinstance(obj, np.generic):
-            return obj.item()
-        if np is not None and isinstance(obj, np.ndarray):
-            descr = np.lib.format.dtype_to_descr(obj.dtype)
-            body = list(obj.ravel()) if obj.dtype.hasobject else obj.tobytes()
-            return self._ext(_NDARRAY, [descr, list(obj.shape), body])
+        if sys.modules.get("numpy") is not None:
+            import numpy as np
+
+            if isinstance(obj, np.generic):
+                return obj.item()
+            if isinstance(obj, np.ndarray):
+                descr = np.lib.format.dtype_to_descr(obj.dtype)
+                body = list(obj.ravel()) if obj.dtype.hasobject else obj.tobytes()
+                return self._ext(_NDARRAY, [descr, list(obj.shape), body])
         raise TypeError(f"cannot serialize {type(obj).__name__!r}")
 
     def _decode(self, code: int, data: bytes) -> Any:

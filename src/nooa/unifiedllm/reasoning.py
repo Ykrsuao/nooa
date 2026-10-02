@@ -4,7 +4,7 @@
 
 from collections.abc import Mapping
 from copy import deepcopy
-from typing import Any
+from typing import Any, Self
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
@@ -40,8 +40,12 @@ class ReasoningConfig(BaseModel):
     default: str | None = None
 
     @model_validator(mode="after")
-    def validate_declaration(self):
+    def validate_declaration(self) -> Self:
         """Reject malformed choices and request-control fields at construction."""
+        self._validate_declaration()
+        return self
+
+    def _validate_declaration(self) -> None:
         if self.default is not None and self.default not in (self.levels or {}):
             raise ValueError("reasoning_default must name a declared reasoning level")
         for level, settings in (self.levels or {}).items():
@@ -51,7 +55,6 @@ class ReasoningConfig(BaseModel):
                 raise ValueError(
                     f"reasoning level {level!r} contains reserved fields: {sorted(conflict)}"
                 )
-        return self
 
     def settings(self, level: str) -> dict[str, Any]:
         """Validate a selection and detach its settings from the stored declaration."""
@@ -67,7 +70,7 @@ class ReasoningConfig(BaseModel):
             )
         # Frozen Pydantic attributes do not freeze nested dictionaries. Reuse the
         # declaration checks so later edits cannot introduce routing controls.
-        self.validate_declaration()
+        self._validate_declaration()
         # Only the small chosen configuration is copied, never conversation data.
         return deepcopy(self.levels[level])
 

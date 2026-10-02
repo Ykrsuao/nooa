@@ -1,5 +1,12 @@
 # Upstream Integration: 2026-10-01
 
+Viewer startup follow-up on 2026-10-02: see
+[diagnosis, fix and Python 3.12 verification](viewer-startup-20261002.md).
+The results below describe the original integration before that fix.
+
+Response/replay typing follow-up on 2026-10-02: see
+[the scoped fixes and remaining typing debt](typing-response-replay-20261002.md).
+
 ## Baselines and Recovery
 
 - Previous base: `3374ceae9f1ba13ddbaceca752d8886d1d9dff3b`.

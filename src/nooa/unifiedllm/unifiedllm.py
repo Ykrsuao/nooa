@@ -9,7 +9,7 @@ import math
 import re
 import warnings
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -1007,7 +1007,9 @@ def _needs_dummy_tool(model: str) -> bool:
     return model_lower.startswith(("anthropic/", "anthropic."))
 
 
-def _messages_have_tool_calls(messages: list[dict[str, Any] | LLMResponse | CacheBoundary]) -> bool:
+def _messages_have_tool_calls(
+    messages: Sequence[dict[str, Any] | LLMResponse | CacheBoundary],
+) -> bool:
     """Return True if any message contains tool_call blocks."""
     for msg in messages:
         if msg.get("role") == "assistant":
@@ -1112,7 +1114,7 @@ def _token_counter_block(block: Any) -> Any:
 
 
 def _token_counter_messages(
-    messages: list[dict[str, Any] | LLMResponse | CacheBoundary],
+    messages: Sequence[dict[str, Any] | LLMResponse | CacheBoundary],
 ) -> list[Any]:
     """Build a calibration-only view litellm.token_counter can actually count.
 
@@ -1157,7 +1159,7 @@ def _token_counter_messages(
 
 def _update_token_calibration(
     model: str,
-    messages: list[dict[str, Any] | LLMResponse | CacheBoundary],
+    messages: Sequence[dict[str, Any] | LLMResponse | CacheBoundary],
     usage: LLMUsage,
     tools: list[dict[str, Any]] | None = None,
     *,
@@ -1927,13 +1929,13 @@ class CompletionClient(UnifiedLLM):
         # can disagree for gateway-routed models; the latter -- not scope --
         # decides whether Anthropic-style cache_control marking is applied.
         cache_mapping = self._resolve_cache_mapping(effective_model, responses=False)
-        messages = replay_state.prepare_chat_messages(
+        projected_messages = replay_state.prepare_chat_messages(
             messages, state_scope, anthropic_cache_marking=cache_mapping == "anthropic"
         )
 
         # Choose the stable-prefix breakpoint on projected provider messages.
         prepared_messages, _, _ = self._prepare_cache_boundary(
-            messages, responses=False, model=effective_model
+            projected_messages, responses=False, model=effective_model
         )
 
         api_params = {
@@ -2025,13 +2027,13 @@ class CompletionClient(UnifiedLLM):
         # can disagree for gateway-routed models; the latter -- not scope --
         # decides whether Anthropic-style cache_control marking is applied.
         cache_mapping = self._resolve_cache_mapping(effective_model, responses=False)
-        messages = replay_state.prepare_chat_messages(
+        projected_messages = replay_state.prepare_chat_messages(
             messages, state_scope, anthropic_cache_marking=cache_mapping == "anthropic"
         )
 
         # Choose the stable-prefix breakpoint on projected provider messages.
         prepared_messages, _, _ = self._prepare_cache_boundary(
-            messages, responses=False, model=effective_model
+            projected_messages, responses=False, model=effective_model
         )
 
         api_params = {
@@ -2202,26 +2204,6 @@ class ReasoningCompletionClient(CompletionClient):
 
 
 class ResponsesClient(UnifiedLLM):
-    def _prepare_call_config(self, overrides: dict[str, Any]) -> dict[str, Any]:
-        """Translate the shared reply cap once, respecting call and level overrides."""
-        config = super()._prepare_call_config(overrides)
-        names = {"max_tokens", "max_completion_tokens", "max_output_tokens"}
-        selected = names & overrides.keys()
-        if not selected:
-            level = overrides.get("reasoning_level", self.reasoning_level)
-            patch = self._reasoning_config.settings(level) if level is not None else {}
-            selected = names & patch.keys()
-        if not selected:
-            selected = names & config.keys()
-        if len(selected) > 1:
-            raise ValueError("Set only one reply limit: max_tokens or max_output_tokens")
-        if selected:
-            value = config[next(iter(selected))]
-            for name in names:
-                config.pop(name, None)
-            config["max_output_tokens"] = value
-        return config
-
     def __init__(
         self,
         model: str,

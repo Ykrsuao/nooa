@@ -235,6 +235,10 @@ For deeper authoring guidance, see `skills/nooa-agent-authoring/SKILL.md`.
 
 ## Python & Dependencies
 
+- **Local Python baseline: 3.12.** Use Python 3.12 for local development, debugging
+  and acceptance. Run other versions or a multi-version matrix only when the user
+  explicitly requests it. This workflow choice does not change declared Python
+  support or CI.
 - **Use `uv` exclusively** for package management — never pip, pip-tools, poetry, or conda.
 - Add packages: `uv add <package>`
 - Remove packages: `uv remove <package>`

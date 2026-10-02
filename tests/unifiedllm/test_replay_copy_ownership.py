@@ -31,6 +31,34 @@ def test_edited_response_owns_its_metadata(edit):
     assert original.metadata == {"k": 1}
 
 
+@pytest.mark.parametrize("deep", [False, True])
+def test_part_edits_invalidate_only_the_copied_public_projection(deep: bool) -> None:
+    original = LLMResponse(
+        parts=(
+            AssistantReasoning(text="thought"),
+            AssistantText(text="before"),
+            ToolCall(id="c", name="run", arguments="{}"),
+        )
+    )
+    public = original.public_message()
+    assert list(original) == list(public)
+    assert list(original.keys()) == list(public.keys())
+    assert list(original.items()) == list(public.items())
+    assert list(original.values()) == list(public.values())
+    assert len(original) == len(public)
+
+    edited = original.model_copy(update={"parts": (AssistantText(text="after"),)}, deep=deep)
+    assert edited.public_message() == {"role": "assistant", "content": "after"}
+    assert original.public_message() == public
+    assert original.get("missing", "fallback") == "fallback"
+    assert "missing" not in original
+    with pytest.raises(KeyError):
+        original["missing"]
+    exposed_calls = dict(original.items())["tool_calls"]
+    exposed_calls[0]["function"]["name"] = "edited"
+    assert original.tool_calls[0].name == "run"
+
+
 class _NoDeepCopy(dict[str, Any]):
     def __deepcopy__(self, memo):
         raise AssertionError("Rejected opaque state must not be copied")
@@ -70,6 +98,7 @@ def test_projection_borrows_immutable_leaves_without_copying_history(api, compat
         else:
             assert all(item.get("type") != "reasoning" for item in wire)
     stored = turn.parts[0].native
+    assert stored is not None
     assert (stored["reasoning_items"]["summary"] if api == "chat" else stored["summary"]) == ()
 
 

@@ -25,8 +25,26 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, Protocol
 
 from nooa_memory.schema import Memory, MemoryType
+
+if TYPE_CHECKING:
+    from nooa.llm_types import CacheBoundary, LLMResponse
+
+
+class TextResponse(Protocol):
+    @property
+    def content(self) -> str | None: ...
+
+
+class ReflectionClient(Protocol):
+    """The synchronous text-completion surface used by generative memory."""
+
+    def call(
+        self, messages: list[dict[str, Any] | LLMResponse | CacheBoundary]
+    ) -> TextResponse: ...
+
 
 _MAX_INSIGHTS = 5  # reasoner output cap per reflection run
 _CONTENT_CLIP = 700  # per-memory text shown to the model
@@ -84,7 +102,7 @@ def _extract_json(text: str) -> dict:
     return data
 
 
-def _complete(get_llm: Callable[[], object], prompt: str) -> str:
+def _complete(get_llm: Callable[[], ReflectionClient], prompt: str) -> str:
     llm = get_llm()
     response = llm.call(messages=[{"role": "user", "content": prompt}])
     return response.content or ""
@@ -124,7 +142,7 @@ def render_recent_events(agent: object, n: int = _MAX_EVENTS) -> str:
     return "\n".join(lines)
 
 
-def llm_episode_writer(get_llm: Callable[[], object]) -> Callable[[str], str | None]:
+def llm_episode_writer(get_llm: Callable[[], ReflectionClient]) -> Callable[[str], str | None]:
     """Build the episode writer: recent-events transcript -> episode text.
 
     Returns None when the model judges the window not noteworthy (or the
@@ -147,7 +165,7 @@ def llm_episode_writer(get_llm: Callable[[], object]) -> Callable[[str], str | N
 
 
 def llm_reconciler(
-    get_llm: Callable[[], object],
+    get_llm: Callable[[], ReflectionClient],
 ) -> Callable[[list[Memory]], tuple[Memory | None, list[str]]]:
     """Build the engine-facing reconciler callable (see module docstring)."""
 
@@ -176,7 +194,7 @@ def llm_reconciler(
     return reconcile
 
 
-def llm_reasoner(get_llm: Callable[[], object]) -> Callable[[list[Memory]], list[Memory]]:
+def llm_reasoner(get_llm: Callable[[], ReflectionClient]) -> Callable[[list[Memory]], list[Memory]]:
     """Build the engine-facing reasoner callable (see module docstring)."""
 
     def reason(episodes: list[Memory]) -> list[Memory]:

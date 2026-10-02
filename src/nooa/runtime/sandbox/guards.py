@@ -23,6 +23,7 @@ import platform
 import socket
 import stat
 import struct
+import sys
 from dataclasses import dataclass
 
 from nooa.runtime.sandbox.config import LandlockRule, ResolvedSpec
@@ -120,6 +121,8 @@ class _SockFprog(ctypes.Structure):
 # ---------------------------------------------------------------------------
 def landlock_abi() -> int:
     """Return the kernel's Landlock ABI version, or 0 if Landlock is absent."""
+    if sys.platform != "linux":
+        return 0
     if _ARCH not in ("x86_64", "aarch64", "arm64"):
         return 0
     try:
@@ -144,6 +147,8 @@ def _abi_fs_mask(abi: int) -> int:
 
 def seccomp_supported() -> bool:
     """True if this process can install a seccomp filter (probe in a child)."""
+    if sys.platform != "linux":
+        return False
     if _NR_SECCOMP < 0:
         return False
     pid = os.fork()
@@ -217,6 +222,8 @@ def apply_rlimits(*, max_memory_mb: int = 0, max_cpu_seconds: int = 0) -> None:
     so an absolute cap below that baseline would break it instantly. The cap is
     ``current VmSize + max_memory_mb`` — i.e. how much more the cell may allocate.
     """
+    if sys.platform == "win32":
+        raise OSError("POSIX resource limits are not available on Windows")
     import resource
 
     if max_memory_mb and max_memory_mb > 0:
@@ -259,6 +266,8 @@ def apply_landlock(rules: list[LandlockRule]) -> None:
     (system) paths are skipped. Requires Landlock ABI >= 1. Irrevocable once
     ``landlock_restrict_self`` returns.
     """
+    if sys.platform != "linux":
+        raise OSError("Landlock is only available on Linux")
     abi = landlock_abi()
     if abi < 1:
         raise OSError("Landlock is not available on this kernel")
@@ -351,6 +360,8 @@ def _seccomp_install(prog: bytes) -> None:
 
 def apply_seccomp_no_inet() -> None:
     """Block creation of any internet (AF_INET/AF_INET6) socket, irrevocably."""
+    if sys.platform != "linux":
+        raise OSError("seccomp is only available on Linux")
     if _NR_SECCOMP < 0:
         raise OSError("seccomp is not available on this architecture")
     _install_no_new_privs()

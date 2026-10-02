@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 
@@ -103,7 +103,7 @@ class LiteLLMEmbedder:
     def _call(self, texts: list[str]) -> list[np.ndarray]:
         import litellm
 
-        kwargs: dict[str, object] = {"model": self._config.model, "input": texts}
+        kwargs: dict[str, Any] = {"model": self._config.model, "input": texts}
         if self._config.endpoint:
             kwargs["api_base"] = self._config.endpoint
         if self._config.api_key:

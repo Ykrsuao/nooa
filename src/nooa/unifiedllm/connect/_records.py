@@ -6,6 +6,7 @@ Missing fields mean unavailable evidence, not zero or unsupported. ``request``
 is retained privately for exact reuse checks; it is never diagnostic output.
 """
 
+from collections.abc import Mapping
 from typing import Any, TypedDict
 
 
@@ -26,8 +27,8 @@ class ProbeRecord(TypedDict, total=False):
     reasoning_text_chars: int | None
     answer_correct: bool
     tool_observed: bool
-    state_retained: bool
-    settings_retained: bool
+    state_retained: bool | None
+    settings_retained: bool | None
     settings_sent: bool | None
     configured_reply_tokens: int
     tested_reply_tokens: int
@@ -48,14 +49,20 @@ class ProbeRecord(TypedDict, total=False):
     explicit_mode: bool
     reasoning_observed_by_turn: list[bool]
     request: dict[str, Any]
+    source: str
+    include_rejected: bool
 
 
-def public_record(record: dict) -> dict:
+def public_record(record: Mapping[str, Any]) -> dict[str, Any]:
     """Select documented evidence; never expose private requests or new raw fields."""
-    return {k: v for k, v in record.items() if k in ProbeRecord.__annotations__ and k != "request"}
+    return {
+        k: v
+        for k, v in record.items()
+        if k in ProbeRecord.__annotations__ and k not in {"request", "source", "include_rejected"}
+    }
 
 
-def check_status(name: str, record: dict, *, missing_reasoning=False) -> str:
+def check_status(name: str, record: Mapping[str, Any], *, missing_reasoning=False) -> str:
     """One verdict policy for progress rows, JSON stages and final summaries."""
     outcome = record.get("outcome")
     if outcome == "not_probed" and not record.get("error"):

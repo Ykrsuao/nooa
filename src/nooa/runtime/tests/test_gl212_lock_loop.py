@@ -41,9 +41,14 @@ class TestGenerationLockLoopChange:
         original_lock = actor._generation_lock
 
         # Simulate a loop change
-        actor._generation_lock_loop = object()  # different object
-        actor._ensure_generation_lock_on_current_loop()
-        assert actor._generation_lock is not original_lock
+        old_loop = asyncio.new_event_loop()
+        try:
+            actor._generation_lock_loop = old_loop
+            actor._ensure_generation_lock_on_current_loop()
+            assert actor._generation_lock is not original_lock
+            assert actor._generation_lock_loop is asyncio.get_running_loop()
+        finally:
+            old_loop.close()
 
     async def test_initial_call_sets_loop(self):
         """First call to _ensure sets _generation_lock_loop from None."""
@@ -58,7 +63,7 @@ class TestGenerationLockLoopChange:
 
         # Phase 1: contend the lock on loop A
         phase1_done = threading.Event()
-        phase1_error = [None]
+        phase1_error: list[Exception | None] = [None]
 
         def loop_A():
             loopA = asyncio.new_event_loop()
@@ -93,7 +98,7 @@ class TestGenerationLockLoopChange:
 
         # Phase 2: use on loop B (simulates agent loop restart)
         phase2_done = threading.Event()
-        phase2_error = [None]
+        phase2_error: list[Exception | None] = [None]
 
         def loop_B():
             loopB = asyncio.new_event_loop()
@@ -143,17 +148,22 @@ class TestQueueManagerNotifyLoopChange:
         qm._notify_pair = (old_event, loop)
 
         # Simulate loop change by replacing the stored loop with a different ref
-        fake_old_loop = object()
-        qm._notify_pair = (old_event, fake_old_loop)
+        old_loop = asyncio.new_event_loop()
+        try:
+            qm._notify_pair = (old_event, old_loop)
 
-        # Put an item so race() returns via fast path (avoids blocking)
-        ch.put("item")
+            # Put an item so race() returns via fast path (avoids blocking)
+            ch.put("item")
 
-        # race() should detect loop mismatch and recreate the pair
-        result = await qm.race()
-        assert result == [("test_ch", "item")]
-        assert qm._notify_pair[1] is loop
-        assert qm._notify_pair[0] is not old_event
+            # race() should detect loop mismatch and recreate the pair
+            result = await qm.race()
+            assert result == [("test_ch", "item")]
+            pair = qm._notify_pair
+            assert pair is not None
+            assert pair[1] is loop
+            assert pair[0] is not old_event
+        finally:
+            old_loop.close()
 
     async def test_notify_pair_stable_when_same_loop(self):
         """_notify_pair is NOT recreated when loop is the same."""

@@ -10,12 +10,14 @@ Without this adapter, doc(px) is ~2000 lines of generated parameter docs.
 With it, doc(px) is ~60 lines covering every chart type.
 """
 
-import plotly
-import plotly.express as px
-import plotly.graph_objects as go
+from importlib import import_module
 
 from nooa.agentdoc import spec
 from nooa.agentdoc.ext import CallableInfo, ModuleInfo
+
+plotly = import_module("plotly")
+px = import_module("plotly.express")
+go = import_module("plotly.graph_objects")
 
 # ---------------------------------------------------------------------------
 # plotly root

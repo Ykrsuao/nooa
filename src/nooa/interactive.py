@@ -385,7 +385,7 @@ class InteractiveAgent(Agent, llm=_DEFAULT_LLM):
     state that should survive across turns.
     """
 
-    _render_message: Annotated[Callable[[str], None] | None, hidden, nosnapshot]
+    _render_message: Annotated[Callable[..., None] | None, hidden, nosnapshot]
     # QueueManager owns the channel registry. Hidden from the LLM by
     # default — the LLM should access individual channels (e.g.
     # ``self.user_messages``) directly, not through a string-keyed

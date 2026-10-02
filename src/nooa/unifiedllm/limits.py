@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Resolved request limits, shared by display and context management."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -48,7 +49,8 @@ def context_limits_for(
     Custom clients can implement get_context_limits to expose their defaults;
     without it, only explicit per-call caps and the old window attributes are known.
     """
-    if callable(resolve := getattr(client, "get_context_limits", None)):
+    resolve: Callable[..., ContextLimits] | None = getattr(client, "get_context_limits", None)
+    if callable(resolve):
         return resolve(params, fallback_reserve=fallback_reserve)
     window = getattr(client, "context_window", None) or getattr(client, "context_limit", None)
     if not isinstance(window, int) or window <= 0:
@@ -61,7 +63,10 @@ def context_limits_for(
 
 def reduced_reply_params(client: Any, params: dict[str, Any], limit: int) -> dict[str, Any]:
     """Keep custom clients usable during the runtime's one bounded recovery."""
-    if callable(reduce := getattr(client, "_with_reduced_reply_limit", None)):
+    reduce: Callable[..., dict[str, Any]] | None = getattr(
+        client, "_with_reduced_reply_limit", None
+    )
+    if callable(reduce):
         return reduce(params, limit)
     key = next((k for k in REPLY_CAP_KEYS if k in params), "max_tokens")
     return {**{k: v for k, v in params.items() if k not in REPLY_CAP_KEYS}, key: limit}

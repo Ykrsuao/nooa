@@ -2,12 +2,22 @@
 # SPDX-License-Identifier: Apache-2.0
 """Bounded multi-turn onboarding checks; raw replay state stays in memory."""
 
+from __future__ import annotations
+
 import asyncio
 import json
 import uuid
+from collections.abc import AsyncGenerator
 from copy import deepcopy
+from typing import TYPE_CHECKING, Any
 
 from . import REASONING_CHECK_PROMPT
+from ._records import ProbeRecord
+
+if TYPE_CHECKING:
+    from nooa.llm_types import LLMResponse
+
+    from . import ProbeUpdate
 
 REPLY_CAP = 2048
 # Includes padding, schema/instructions, and up to two prior reply-sized items.
@@ -177,7 +187,9 @@ def _reasoning_values(response):
         yield from payloads(native)
 
 
-async def session_steps(alias, entry, *, api_key, budget_tokens):
+async def session_steps(
+    alias: str, entry: dict[str, Any], *, api_key: str | None, budget_tokens: int
+) -> AsyncGenerator[ProbeUpdate, None]:
     """Three configured-cap turns, without retries; never execute model tools."""
     from nooa.context_blocks.formatter import OpenAIProviderFormatter
     from nooa.context_blocks.models import BlockMetadata, ResolvedBlock, Role
@@ -278,7 +290,7 @@ async def session_steps(alias, entry, *, api_key, budget_tokens):
         block_formatter=formatter,
         provider_formatter=provider,
     ).output
-    params = {
+    params: dict[str, Any] = {
         "tools": [
             Tool(name="probe_tool", description="Record a computed value", callable=probe_tool)
         ],
@@ -306,15 +318,19 @@ async def session_steps(alias, entry, *, api_key, budget_tokens):
             http_config=HttpConfig(read_timeout=120),
             retry_config=RetryConfig(max_retries=0, rate_limit_extra_retries=0),
         )
+        http = client._http
+        if http is None:
+            await client.aclose()
+            raise RuntimeError("Connect session checks require an instrumented HTTP client")
     except Exception as exc:
         yield ProbeUpdate("session", {"outcome": "not_confirmed", "error": type(exc).__name__})
         return
     # Hook only this owned client. Never monkey-patch global HTTP or store headers.
-    hooks = client._http.httpx_async.event_hooks["request"]
+    hooks = http.httpx_async.event_hooks["request"]
     hooks.append(capture)
     spent = 0
-    first = None
-    replay = None
+    first: LLMResponse | None = None
+    replay: list[dict[str, Any] | LLMResponse] = []
     readings = []
     observations = []
     settings_ok = True
@@ -331,7 +347,7 @@ async def session_steps(alias, entry, *, api_key, budget_tokens):
                 )
                 return
             yield ProbeUpdate(f"session:{name}", {"outcome": "running"})
-            call_messages = (
+            call_messages: list[dict[str, Any] | LLMResponse | CacheBoundary] = (
                 messages
                 if index == 0
                 else [
@@ -364,7 +380,7 @@ async def session_steps(alias, entry, *, api_key, budget_tokens):
                 async with asyncio.timeout(120):
                     response = await client.acall(call_messages, **params)
             except Exception as exc:
-                record = {
+                record: ProbeRecord = {
                     "outcome": "not_confirmed",
                     "error": type(exc).__name__,
                     "tokens_charged_to_budget": spent,
@@ -486,6 +502,7 @@ async def session_steps(alias, entry, *, api_key, budget_tokens):
         # (the previous check) could never catch this: it never let a marked
         # message become history within the probe at all.
         key = "input" if entry["api_style"] == "responses" else "messages"
+        assert first is not None
         stable = _history_prefix_stable(successful_bodies[1], successful_bodies[2], key)
         best = max(readings, key=lambda r: r["cached_input_tokens"] or 0)
         cached = best["cached_input_tokens"]

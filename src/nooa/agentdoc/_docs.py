@@ -43,7 +43,8 @@ from typing import Annotated, Any
 
 from nooa.agentdoc._metadata import set_docs_metadata, set_field_metadata
 
-_SENTINEL = object()
+# The opaque default distinguishes omission from an explicit unlimited None.
+_SENTINEL: Any = object()
 
 
 def _sync_hidden(target: Any, hidden_value: bool | None) -> None:

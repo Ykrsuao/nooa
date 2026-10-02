@@ -14,7 +14,7 @@ import re as _re
 import tokenize
 import types
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast, get_type_hints
@@ -42,7 +42,7 @@ from nooa.events import (
     LLMCallStart,
     SystemPrompt,
 )
-from nooa.llm_types import LLMUsage
+from nooa.llm_types import CacheBoundary, LLMResponse, LLMUsage
 from nooa.runtime.context_vars import (
     _current_event_format_var,
     _in_exec_middleware,
@@ -143,7 +143,9 @@ warnings.filterwarnings(
 _TRAILING_CONTEXT_RE = _re.compile(r"^(.*?)(<context>.*?</context>)\s*\Z", _re.DOTALL)
 
 
-def _extract_trailing_context_envelope(messages: list[dict[str, Any]]) -> str:
+def _extract_trailing_context_envelope(
+    messages: Sequence[dict[str, Any] | LLMResponse | CacheBoundary],
+) -> str:
     """Pull the trailing ``<context>…</context>`` envelope from messages.
 
     ``CachedBlockFormatter`` emits dynamic SYSTEM-role blocks as a
@@ -170,7 +172,9 @@ def _extract_trailing_context_envelope(messages: list[dict[str, Any]]) -> str:
 
 
 def _snapshot_llm_request(
-    event_manager: Any, messages: list[dict[str, Any]], generation_id: str
+    event_manager: Any,
+    messages: Sequence[dict[str, Any] | LLMResponse | CacheBoundary],
+    generation_id: str,
 ) -> str:
     """Snapshot the rendered request for observability consumers (e.g. ATIF).
 
@@ -2964,7 +2968,7 @@ class ActorRuntime:
         max_output_tokens: int | None = None,
         request_params: dict[str, Any] | None = None,
         llm_client: Any = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, Any] | LLMResponse | CacheBoundary]:
         """Build messages for LLM API.
 
         Calls _prepare_context() to gather and resolve all blocks,

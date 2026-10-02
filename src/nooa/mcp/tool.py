@@ -648,9 +648,11 @@ class MCPTool:
             result = await session.call_tool(tool_name, clean_args)
 
         if hasattr(result, "content") and result.content:
+            missing = object()
             for content in result.content:
-                if hasattr(content, "text"):
-                    return content.text
+                text = getattr(content, "text", missing)
+                if text is not missing:
+                    return text
             return result.content
 
         return result
@@ -663,14 +665,15 @@ class MCPTool:
         """
         ctx = self._refresh_ctx
         server_url = ctx.get("server_url")
-        if not server_url:
+        transport = ctx.get("transport")
+        if not server_url or transport not in ("stdio", "sse", "streamable-http"):
             return False
         try:
             from .oauth import handle_mcp_oauth
 
             token = await handle_mcp_oauth(
                 server_url=server_url,
-                redirect_uri=ctx.get("redirect_uri", "http://localhost:0/callback"),
+                redirect_uri=ctx.get("redirect_uri") or "http://localhost:0/callback",
                 client_id=ctx.get("client_id"),
                 scope=ctx.get("scope"),
                 open_browser=False,  # unattended refresh — never launch a browser
@@ -684,7 +687,7 @@ class MCPTool:
             # longer one starts failing after its first token refresh.
             timeout = ctx.get("tool_call_timeout")
             self._client = create_mcp_client(
-                transport=ctx.get("transport"),
+                transport=transport,
                 url=server_url,
                 command=ctx.get("command"),
                 args=ctx.get("args"),
@@ -952,8 +955,10 @@ class MCPManager:
         args = args or config_server.get("args")
         env = env or config_server.get("env")
         oauth_client_id = oauth_client_id or config_server.get("oauth_client_id")
-        oauth_redirect_uri = oauth_redirect_uri or config_server.get(
-            "oauth_redirect_uri", "http://127.0.0.1:0/callback"
+        redirect_uri: str = (
+            oauth_redirect_uri
+            or config_server.get("oauth_redirect_uri")
+            or "http://127.0.0.1:0/callback"
         )
         oauth_scope = oauth_scope or config_server.get("oauth_scope")
         oauth_open_browser = bool(
@@ -1000,7 +1005,7 @@ class MCPManager:
                     token = _run_sync(
                         handle_mcp_oauth(
                             server_url=url or config_server.get("url") or "",
-                            redirect_uri=oauth_redirect_uri,
+                            redirect_uri=redirect_uri,
                             client_id=oauth_client_id,
                             scope=oauth_scope,
                             open_browser=oauth_open_browser,
@@ -1047,7 +1052,7 @@ class MCPManager:
         refresh_ctx = {
             "server_url": url or config_server.get("url") or "",
             "tool_call_timeout": tool_call_timeout,
-            "redirect_uri": oauth_redirect_uri,
+            "redirect_uri": redirect_uri,
             "client_id": oauth_client_id,
             "scope": oauth_scope,
             "headers": headers,

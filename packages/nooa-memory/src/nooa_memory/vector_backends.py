@@ -19,6 +19,7 @@ Select one with ``MemoryConfig.vector.backend``; ``make_vector_index`` dispatche
 from __future__ import annotations
 
 import sqlite3
+from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
@@ -97,7 +98,7 @@ class SqliteVecVectorIndex:
         if dim <= 0:
             raise ValueError("sqlite-vec backend requires a positive embedding dim")
         try:
-            import sqlite_vec
+            sqlite_vec = import_module("sqlite_vec")
         except ImportError as e:  # pragma: no cover - exercised only without the dep
             raise ImportError(
                 "The 'sqlite_vec' backend requires the sqlite-vec package. "
@@ -153,8 +154,8 @@ class ChromaVectorIndex:
         self, config: VectorConfig, *, dim: int | None = None, path: str = ":memory:"
     ) -> None:
         try:
-            import chromadb
-            from chromadb.config import Settings
+            chromadb = import_module("chromadb")
+            Settings = import_module("chromadb.config").Settings
         except ImportError as e:  # pragma: no cover - exercised only without the dep
             raise ImportError(
                 "The Chroma backends require the chromadb package. "

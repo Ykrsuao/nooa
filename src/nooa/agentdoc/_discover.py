@@ -104,10 +104,9 @@ def discover_referenced_types(
     # non-annotated attrs).
     # Use the same extraction that extract_type_info uses for consistency
     from nooa.agentdoc._structured import extract_type_info
+    from nooa.agentdoc._visibility import is_hidden_field
 
     type_info = extract_type_info(type_obj)
-    if visibility_obj is not None:
-        from nooa.agentdoc._visibility import is_hidden_field
 
     for field in type_info.fields:
         if field_names is not None and field.name not in field_names:

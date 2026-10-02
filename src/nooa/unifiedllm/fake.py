@@ -15,7 +15,14 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
-from nooa.llm_types import CacheBoundary, LLMResponse, LLMUsage, ToolCall
+from nooa.llm_types import (
+    AssistantReasoning,
+    AssistantText,
+    CacheBoundary,
+    LLMResponse,
+    LLMUsage,
+    ToolCall,
+)
 from nooa.unifiedllm.unifiedllm import Tool, UnifiedLLM
 
 from .cache_policy import apply_cache_policy
@@ -199,10 +206,8 @@ class FakeLLMClient(UnifiedLLM):
         else:
             response = LLMResponse(
                 raw_response=None,
-                content="",
-                tool_calls=[],
+                parts=(AssistantText(text=""),),
                 finish_reason="stop",
-                reasoning=None,
                 usage=None,
             )
             error = None
@@ -266,10 +271,8 @@ class FakeLLMClient(UnifiedLLM):
             responses.append(
                 LLMResponse(
                     raw_response=None,
-                    content=code,
-                    tool_calls=[],
+                    parts=(AssistantText(text=code),),
                     finish_reason="stop",
-                    reasoning=None,
                     usage=LLMUsage(
                         input_tokens=10,
                         output_tokens=len(code.split()),
@@ -304,10 +307,8 @@ class FakeLLMClient(UnifiedLLM):
             [
                 LLMResponse(
                     raw_response=None,
-                    content=message,
-                    tool_calls=[],
+                    parts=(AssistantText(text=message),),
                     finish_reason="stop",
-                    reasoning=None,
                     usage=LLMUsage(
                         input_tokens=10,
                         output_tokens=len(words),
@@ -343,16 +344,15 @@ class FakeLLMClient(UnifiedLLM):
             [
                 LLMResponse(
                     raw_response=None,
-                    content=message or "",
-                    tool_calls=[
+                    parts=(
+                        AssistantText(text=message or ""),
                         ToolCall(
                             id="call_fake_123",
                             name=tool_name,
                             arguments=json.dumps(tool_args),
-                        )
-                    ],
+                        ),
+                    ),
                     finish_reason="tool_calls",
-                    reasoning=None,
                     usage=LLMUsage(input_tokens=10, output_tokens=5, total_tokens=15),
                 )
             ],
@@ -382,10 +382,12 @@ class FakeLLMClient(UnifiedLLM):
             [
                 LLMResponse(
                     raw_response=None,
-                    content=message,
-                    tool_calls=[],
+                    parts=(
+                        (AssistantReasoning(text=reasoning), AssistantText(text=message))
+                        if reasoning
+                        else (AssistantText(text=message),)
+                    ),
                     finish_reason="stop",
-                    reasoning=reasoning,
                     usage=LLMUsage(input_tokens=15, output_tokens=10, total_tokens=25),
                 )
             ],

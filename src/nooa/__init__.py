@@ -75,6 +75,7 @@ from nooa.token_counter import char_approximate_token_counter  # noqa: E402
 # NOTE: ReflexionStrategy is experimental; it resolves to the
 # warning-emitting factory in nooa.experimental (below).
 if _typing.TYPE_CHECKING:  # the same names, for type checkers and IDEs
+    from nooa.experimental import ReflexionStrategy
     from nooa.llm_config import llm_config_chain
     from nooa.llm_types import LLMResponse
     from nooa.strategies import (
