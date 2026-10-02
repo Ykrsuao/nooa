@@ -21,8 +21,6 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from nooa.unifiedllm.registry import resolve_api_key_from_config
-
 from . import otlp_store
 from .trace_models import TraceGroup
 
@@ -696,6 +694,8 @@ async def run_inference(request: InferenceRequest):
             kwargs["custom_llm_provider"] = "openai"
 
         if model_config:
+            from nooa.unifiedllm.registry import resolve_api_key_from_config
+
             api_key = resolve_api_key_from_config(
                 request.model,
                 model_config,

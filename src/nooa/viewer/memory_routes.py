@@ -24,21 +24,21 @@ import sqlite3
 from collections import OrderedDict
 from contextlib import suppress
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException
 
-try:
-    from nooa_memory.config import EmbeddingConfig, ForgetPolicy, RetrievalConfig
-    from nooa_memory.embeddings import get_embedder
+if TYPE_CHECKING:
     from nooa_memory.forgetting import ForgettingEngine
-    from nooa_memory.observability import per_memory_usage, store_kpis
-    from nooa_memory.retrieval import RetrievalEngine
     from nooa_memory.schema import Memory
-    from nooa_memory.store import MemorySchemaError, MemoryStore
+    from nooa_memory.store import MemoryStore
 
-    _HAS_MEMORY = True
+try:
+    import nooa_memory as _memory
 except ImportError:
-    _HAS_MEMORY = False
+    _memory = None
+
+_HAS_MEMORY = _memory is not None
 
 router = APIRouter(prefix="/api/memory")
 
@@ -93,6 +93,10 @@ def _resolve_db(db: str) -> Path:
 
 
 def _get_store(db: str) -> MemoryStore:
+    if not _HAS_MEMORY:
+        raise HTTPException(status_code=503, detail="The nooa-memory package is not available")
+    from nooa_memory.store import MemorySchemaError, MemoryStore
+
     key = str(_resolve_db(db))
     store = _stores.get(key)
     if store is None:
@@ -127,6 +131,9 @@ def _validate_owner(owner: str | None) -> str | None:
 
 
 def _forgetting(store: MemoryStore) -> ForgettingEngine:
+    from nooa_memory.config import ForgetPolicy
+    from nooa_memory.forgetting import ForgettingEngine
+
     return ForgettingEngine(store, ForgetPolicy())
 
 
@@ -226,6 +233,8 @@ def list_records(
 def get_record(db: str, id: str) -> dict:
     """Full detail for one memory: all fields + usage panel + hydrated edges."""
     store = _get_store(db)
+    from nooa_memory.observability import per_memory_usage
+
     m = store.get(id)
     if m is None:
         raise HTTPException(status_code=404, detail=f"Memory not found: {id}")
@@ -258,6 +267,8 @@ def get_record(db: str, id: str) -> dict:
 def get_stats(db: str) -> dict:
     """Store-level KPI payload for the dashboard (see observability.store_kpis)."""
     store = _get_store(db)
+    from nooa_memory.observability import store_kpis
+
     return store_kpis(store, forgetting=_forgetting(store))
 
 
@@ -277,6 +288,10 @@ def explain(db: str, q: str, k: int = 10, dim: int = 256, owner: str | None = No
         raise HTTPException(status_code=422, detail="dim must be >= 1")
     owner = _validate_owner(owner)
     store = _get_store(db)
+    from nooa_memory.config import EmbeddingConfig, RetrievalConfig
+    from nooa_memory.embeddings import get_embedder
+    from nooa_memory.retrieval import RetrievalEngine
+
     engine = RetrievalEngine(store, get_embedder(EmbeddingConfig(dim=dim)), RetrievalConfig())
     try:
         return engine.explain(q, k=k, owner=owner)

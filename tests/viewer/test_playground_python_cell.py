@@ -42,3 +42,47 @@ async def test_playground_declares_historical_python_tool(monkeypatch, tool_name
     assert "python_cell" not in {
         tool["function"]["name"] for tool in trace_routes.DEFAULT_SANDBOX_TOOLS
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("allowed", [True, False])
+async def test_playground_resolves_configured_key_on_inference(monkeypatch, allowed):
+    import litellm
+
+    from nooa.viewer import trace_routes
+
+    captured = {}
+
+    async def completion(**kwargs):
+        captured.update(kwargs)
+        return litellm.ModelResponse(
+            model="model", choices=[{"message": {"role": "assistant", "content": "ok"}}]
+        )
+
+    monkeypatch.setattr(litellm, "acompletion", completion)
+    monkeypatch.setenv("VIEWER_TEST_API_KEY", "offline-test-key")
+    monkeypatch.setattr(
+        trace_routes,
+        "get_model_config",
+        lambda model: {
+            "endpoint": "http://127.0.0.1:9/v1",
+            "api_key_env": "VIEWER_TEST_API_KEY",
+        },
+    )
+    monkeypatch.setattr(
+        trace_routes,
+        "get_known_api_key_patterns",
+        lambda: ["VIEWER_TEST_API_KEY"] if allowed else [],
+    )
+    result = await trace_routes.run_inference(
+        trace_routes.InferenceRequest(
+            model="openai/model", messages=[{"role": "user", "content": "hello"}]
+        )
+    )
+    assert result["status"] == "success"
+    assert captured["api_base"] == "http://127.0.0.1:9/v1"
+    assert captured["custom_llm_provider"] == "openai"
+    if allowed:
+        assert captured["api_key"] == "offline-test-key"
+    else:
+        assert "api_key" not in captured
