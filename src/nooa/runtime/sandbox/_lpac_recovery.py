@@ -14,7 +14,6 @@ import ctypes
 import json
 import os
 import re
-import shutil
 import time
 import uuid
 from collections.abc import Callable, Iterator
@@ -344,10 +343,11 @@ def _read_record(entry: Path) -> dict[str, Any]:
 
 def _remove_pinned_tree(directory: _Directory) -> None:
     from nooa.runtime.sandbox._appcontainer import _long_path
+    from nooa.runtime.sandbox._windows_cleanup import _remove_tree
 
     target = _long_path(directory.path)
 
-    # rmtree on Windows unlinks junctions. Keep the root pinned until its final
+    # Cleanup unlinks junctions. Keep the root pinned until its final
     # removal, then delete that exact directory through the owned native handle.
     def on_error(function, path, exc):
         if function is os.rmdir and Path(path) == target and exc.winerror == 32:
@@ -355,7 +355,7 @@ def _remove_pinned_tree(directory: _Directory) -> None:
             return
         raise exc
 
-    shutil.rmtree(target, onexc=on_error)
+    _remove_tree(target, onexc=on_error)
 
 
 def _delete_profile(name: str) -> None:

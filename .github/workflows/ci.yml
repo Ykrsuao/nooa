@@ -156,6 +156,7 @@ jobs:
           tests/runtime/sandbox/test_windows_job.py
           tests/runtime/sandbox/test_spawn_executor.py
           tests/runtime/sandbox/test_appcontainer.py
+          tests/runtime/sandbox/test_windows_cleanup.py
           tests/runtime/sandbox/test_lpac_executor.py
           tests/runtime/sandbox/test_lpac_codeact.py
           tests/runtime/sandbox/test_lpac_runtime.py
@@ -166,6 +167,7 @@ jobs:
           tests/runtime/sandbox/test_lpac_directories.py
           tests/runtime/sandbox/test_windows_session.py
           tests/runtime/sandbox/test_windows_api.py
+          tests/runtime/sandbox/test_windows_capabilities.py
           tests/runtime/sandbox/test_platform_support.py
           tests/runtime/test_execute_code.py
           tests/test_smoke_install.py

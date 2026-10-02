@@ -232,8 +232,9 @@ class _AppContainerPython:
                     or self.root.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
                 ):
                     raise ValueError("refusing to remove a substituted LPAC staging root")
-                # Windows rmtree unlinks directory junctions rather than traversing them.
-                shutil.rmtree(_long_path(self.root))
+                from nooa.runtime.sandbox._windows_cleanup import _remove_tree
+
+                _remove_tree(self.root)
             self._closed = True
 
     def run(

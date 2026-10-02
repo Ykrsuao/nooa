@@ -52,6 +52,18 @@ directory. For code you can run immediately, use the
 2. [Tracing](concepts/tracing.md)
 3. [Safety](concepts/safety.md)
 
+### Run Agent code in the native Windows sandbox
+
+1. Use the explicit [`WindowsSandboxSession` interface](windows-sandbox-policy.md#public-windows-interface).
+2. Read the [enforced policy and lifecycle contract](windows-sandbox-policy.md).
+3. Check the [v1 delivery record](windows-v1-delivery-20261002.md) and
+   [public-entry stability and installed acceptance](windows-public-stability-20261002.md).
+4. Consult [implementation status and operational limits](windows-sandbox.md)
+   for supported behavior and follow-up scope.
+
+The Windows entry is configured through `WindowsSandboxPolicy`; the ordinary
+`execution_backend="sandbox"` selector still requires a fork-capable platform.
+
 ### Scale beyond one agent
 
 1. [Multi-agent systems](concepts/multi-agent-systems.md)

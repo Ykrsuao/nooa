@@ -402,5 +402,8 @@ examples/memory_bench/data/
 # Local scratch/working files (never commit)
 .scratch/
 
+# Local acceptance reports, diagnostic scripts, and interpreter caches
+/logs/
+
 # Claude Code local session dir (never commit)
 .claude/

@@ -348,7 +348,10 @@ def _smoke_check() -> Check:
                     else:
                         os.environ[name] = value
         return Check(
-            "smoke", "ok", "Unicode I/O, command cancellation, recovery, and shell cleanup passed."
+            "smoke",
+            "ok",
+            "Unicode I/O, command cancellation, recovery, and shell cleanup passed. "
+            "This shell check does not start a sandbox or verify containment.",
         )
     except Exception as exc:
         return Check(
@@ -358,6 +361,46 @@ def _smoke_check() -> Check:
             "Check the bash diagnostic, loopback/firewall access, TEMP permissions, "
             "and any explicit PYTHONIOENCODING override; then retry nooa doctor --smoke.",
         )
+
+
+def _sandbox_checks() -> list[Check]:
+    if PLATFORM != "win32":
+        return [Check("sandbox", "skipped", "OS containment is not tested by doctor.")]
+    checks = [
+        Check(
+            "sandbox",
+            "warning",
+            "Native Windows has no fork-based sandbox. In-process execution is not containment.",
+            "Use an explicit WindowsSandboxSession with WindowsSandboxPolicy, "
+            "or an isolated, supported Linux environment for fork-based execution.",
+        )
+    ]
+    try:
+        from nooa.runtime.sandbox.windows import probe_windows_sandbox
+
+        capabilities = probe_windows_sandbox()
+        checks.append(
+            Check(
+                "windows_sandbox",
+                "ok" if capabilities.native_api_available else "warning",
+                f"Explicit WindowsSandboxSession prerequisites: {capabilities.detail}",
+                None
+                if capabilities.native_api_available
+                else "Check native Windows AppContainer and Job Object API availability. "
+                "WindowsSandboxSession fails closed when its prerequisites are unavailable.",
+            )
+        )
+    except Exception as exc:
+        checks.append(
+            Check(
+                "windows_sandbox",
+                "warning",
+                f"WindowsSandboxSession prerequisite probe failed: {type(exc).__name__}: {exc}. "
+                "No session was started; containment is not verified.",
+                "Check the core installation and native Windows support.",
+            )
+        )
+    return checks
 
 
 def collect_checks(workspace: Path, *, port: int, smoke: bool) -> list[Check]:
@@ -376,22 +419,14 @@ def collect_checks(workspace: Path, *, port: int, smoke: bool) -> list[Check]:
         checks.append(
             Check("paths", "error", str(exc), "Repair the core installation: uv add nooa")
         )
-    checks.append(
-        Check(
-            "sandbox",
-            "warning",
-            "Native Windows has no fork-based sandbox. In-process execution is not containment.",
-            "Use an isolated, supported Linux environment for sandbox execution.",
-        )
-        if PLATFORM == "win32"
-        else Check("sandbox", "skipped", "OS containment is not tested by doctor.")
-    )
+    checks.extend(_sandbox_checks())
     if not smoke:
         checks.append(
             Check(
                 "smoke",
                 "skipped",
-                "Not requested; run nooa doctor --smoke for a disposable shell check.",
+                "Not requested; run nooa doctor --smoke for a disposable shell check. "
+                "It does not start a sandbox or verify containment.",
             )
         )
     elif any(check.status == "error" for check in checks if check.id in ("python", "bash")):

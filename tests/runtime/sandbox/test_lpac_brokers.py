@@ -25,10 +25,14 @@ from nooa.config import CodeActConfig
 from nooa.events import PythonOutput
 from nooa.runtime.restrictions import DEFAULT_BLOCKED_MODULES, RestrictionsConfig
 from nooa.runtime.sandbox import _windows_session as managed
-from nooa.runtime.sandbox._lpac_files import _FileBroker, _FileGrant
-from nooa.runtime.sandbox._lpac_http import _HttpsBroker, _HttpsEndpoint, _public_address
-from nooa.runtime.sandbox._windows_policy import _WindowsSandboxPolicy
-from nooa.runtime.sandbox._windows_session import _WindowsSandboxSession
+from nooa.runtime.sandbox._lpac_files import _FileBroker
+from nooa.runtime.sandbox._lpac_http import _HttpsBroker, _public_address
+from nooa.runtime.sandbox.windows import (
+    FileGrant,
+    HttpsEndpoint,
+    WindowsSandboxPolicy,
+    WindowsSandboxSession,
+)
 from nooa.unifiedllm import FakeLLMClient, LLMResponse, ToolCall
 
 pytestmark = pytest.mark.timeout(180)
@@ -42,7 +46,7 @@ async def test_files_are_bounded_named_grants_not_worker_paths(tmp_path):
     output.write_bytes(b"old data")
     secret.write_bytes(b"private")
     async with _FileBroker(
-        {"source": _FileGrant(source), "output": _FileGrant(output, writable=True)},
+        {"source": FileGrant(source), "output": FileGrant(output, writable=True)},
         max_file_bytes=16,
     ) as broker:
         assert await broker.read("source") == b"read-only"
@@ -76,7 +80,7 @@ async def test_files_are_bounded_named_grants_not_worker_paths(tmp_path):
 async def test_oversized_existing_file_is_not_read(tmp_path):
     source = tmp_path / "large"
     source.write_bytes(b"x" * 20)
-    async with _FileBroker({"large": _FileGrant(source)}, max_file_bytes=10) as broker:
+    async with _FileBroker({"large": FileGrant(source)}, max_file_bytes=10) as broker:
         with pytest.raises(ValueError, match="max_file_bytes"):
             await broker.read("large")
 
@@ -98,13 +102,13 @@ def test_invalid_grants_do_not_create_or_truncate_files(tmp_path):
         Path(r"\\.\pipe\file"),
     ):
         with pytest.raises((OSError, ValueError)):
-            _FileBroker({"target": _FileGrant(path, writable=True)})
+            _FileBroker({"target": FileGrant(path, writable=True)})
     assert target.read_bytes() == b"original"
     assert not (tmp_path / "missing").exists()
     alias = tmp_path / "alias"
     os.link(target, alias)
     with pytest.raises(ValueError, match="hard-link"):
-        _FileBroker({"target": _FileGrant(target, writable=True)})
+        _FileBroker({"target": FileGrant(target, writable=True)})
     target.unlink()  # Failed setup retained no file handle.
 
 
@@ -113,7 +117,7 @@ def test_partial_grant_setup_closes_previously_opened_handles(tmp_path):
     source = tmp_path / "first"
     source.write_bytes(b"original")
     with pytest.raises(OSError):
-        _FileBroker({"first": _FileGrant(source), "missing": _FileGrant(tmp_path / "missing")})
+        _FileBroker({"first": FileGrant(source), "missing": FileGrant(tmp_path / "missing")})
     source.unlink()
 
 
@@ -141,7 +145,7 @@ def test_junction_retarget_between_check_and_open_is_rejected(tmp_path, monkeypa
 
     monkeypatch.setattr(_lpac_files, "_open_native_file", race)
     with pytest.raises(OSError):
-        _FileBroker({"file": _FileGrant(file, writable=True)})
+        _FileBroker({"file": FileGrant(file, writable=True)})
     assert (outside / "file").read_bytes() == b"private"
     assert (moved / "file").read_bytes() == b"approved"
     approved.rmdir()  # Remove only the junction, never its target.
@@ -151,7 +155,7 @@ def test_junction_retarget_between_check_and_open_is_rejected(tmp_path, monkeypa
 async def test_unicode_file_handles_support_non_bmp_names(tmp_path):
     path = tmp_path / "\u6587\u4ef6-\U0001f4c4.txt"
     path.write_bytes(b"original")
-    async with _FileBroker({"data": _FileGrant(path, writable=True)}) as broker:
+    async with _FileBroker({"data": FileGrant(path, writable=True)}) as broker:
         assert await broker.read("data") == b"original"
         await broker.write("data", b"changed")
     assert path.read_bytes() == b"changed"
@@ -170,7 +174,7 @@ async def test_cancellation_drains_file_io_before_close(tmp_path, monkeypatch):
 
     path = tmp_path / "output"
     path.write_bytes(b"old")
-    broker = _FileBroker({"output": _FileGrant(path, writable=True)})
+    broker = _FileBroker({"output": FileGrant(path, writable=True)})
     started, release = threading.Event(), threading.Event()
     write = files.os.write
 
@@ -245,7 +249,7 @@ def test_non_public_and_transition_addresses_are_refused(address):
 )
 def test_unsafe_endpoint_urls_are_refused(url):
     with pytest.raises(ValueError):
-        _HttpsBroker({"data": _HttpsEndpoint(url, "93.184.216.34")})
+        _HttpsBroker({"data": HttpsEndpoint(url, "93.184.216.34")})
 
 
 @pytest.mark.parametrize("value", [0, -1, 4 * 1024 * 1024 + 1, True, 1.5])
@@ -390,7 +394,7 @@ async def https_server(certificates, monkeypatch):
 
 def _https(server, path="/data", **kwargs):
     broker = _HttpsBroker(
-        {"data": _HttpsEndpoint(f"https://allowed.test:{server.port}{path}", "93.184.216.34")},
+        {"data": HttpsEndpoint(f"https://allowed.test:{server.port}{path}", "93.184.216.34")},
         ca_file=server.cert,
         **kwargs,
     )
@@ -440,7 +444,7 @@ async def test_https_rejects_redirects_and_oversized_or_encoded_bodies(https_ser
 
 async def test_https_still_verifies_certificate_hostname(https_server):
     broker = _HttpsBroker(
-        {"data": _HttpsEndpoint(f"https://wrong.test:{https_server.port}/data", "93.184.216.34")},
+        {"data": HttpsEndpoint(f"https://wrong.test:{https_server.port}/data", "93.184.216.34")},
         ca_file=https_server.cert,
     )
     with pytest.raises(httpcore.ConnectError, match="CERTIFICATE_VERIFY_FAILED"):
@@ -451,7 +455,7 @@ async def test_https_still_verifies_certificate_hostname(https_server):
 async def test_https_does_not_take_trust_roots_from_environment(https_server, monkeypatch):
     monkeypatch.setenv("SSL_CERT_FILE", str(https_server.cert))
     broker = _HttpsBroker(
-        {"data": _HttpsEndpoint(f"https://allowed.test:{https_server.port}/data", "93.184.216.34")}
+        {"data": HttpsEndpoint(f"https://allowed.test:{https_server.port}/data", "93.184.216.34")}
     )
     with pytest.raises(httpcore.ConnectError, match="CERTIFICATE_VERIFY_FAILED"):
         await broker.fetch("data")
@@ -527,11 +531,11 @@ async def test_managed_https_agent_allowed_request_and_enforced_denials(managed_
     monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:1")
     monkeypatch.setenv("SSL_CERT_FILE", "must-not-be-used.pem")
     endpoints = {
-        name: _HttpsEndpoint(f"https://allowed.test:{server.port}/{name}", "93.184.216.34")
+        name: HttpsEndpoint(f"https://allowed.test:{server.port}/{name}", "93.184.216.34")
         for name in ("data", "redirect", "large")
     }
-    endpoints["wrong"] = _HttpsEndpoint(f"https://wrong.test:{server.port}/data", "93.184.216.34")
-    owner = _WindowsSandboxSession(_WindowsSandboxPolicy(https=endpoints, max_response_bytes=16))
+    endpoints["wrong"] = HttpsEndpoint(f"https://wrong.test:{server.port}/data", "93.184.216.34")
+    owner = WindowsSandboxSession(WindowsSandboxPolicy(https=endpoints, max_response_bytes=16))
     async with owner:
         root = owner._runtime.root
         agent = _managed_https_agent(
@@ -590,15 +594,15 @@ async def test_managed_https_agent_allowed_request_and_enforced_denials(managed_
 @pytest.mark.parametrize("deadline", ["broker", "https"])
 async def test_managed_https_deadlines_cancellation_and_new_calls(managed_https, deadline):
     server = managed_https
-    policy = _WindowsSandboxPolicy(
+    policy = WindowsSandboxPolicy(
         https={
-            name: _HttpsEndpoint(f"https://allowed.test:{server.port}/{name}", "93.184.216.34")
+            name: HttpsEndpoint(f"https://allowed.test:{server.port}/{name}", "93.184.216.34")
             for name in ("slow", "data")
         },
         broker_timeout_s=0.2 if deadline == "broker" else 0,
         https_timeout_s=0.2 if deadline == "https" else 10,
     )
-    owner = _WindowsSandboxSession(policy)
+    owner = WindowsSandboxSession(policy)
     async with owner:
         root = owner._runtime.root
         agent = _managed_https_agent(owner, "await self.fetch_https('slow')", "return_result('ok')")
@@ -657,7 +661,7 @@ async def test_real_lpac_worker_uses_brokers_without_direct_file_or_network_gran
     source.write_bytes(b"original")
     output.write_bytes(b"")
     async with _FileBroker(
-        {"source": _FileGrant(source), "output": _FileGrant(output, writable=True)}
+        {"source": FileGrant(source), "output": FileGrant(output, writable=True)}
     ) as files:
         http = _https(https_server)
         executor = _LpacExecutor(

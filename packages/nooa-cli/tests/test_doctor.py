@@ -268,3 +268,67 @@ def test_failed_smoke_cleans_temporary_files_and_restores_environment(monkeypatc
     assert list(tmp_path.iterdir()) == []
     assert tempfile.tempdir == str(tmp_path)
     assert {name: os.environ.get(name) for name in previous} == previous
+
+
+@pytest.mark.parametrize("available", [True, False])
+def test_windows_sandbox_prerequisites_are_separate_from_fork_support(monkeypatch, available):
+    from nooa.runtime.sandbox import windows
+    from nooa.runtime.sandbox._windows_capabilities import WindowsSandboxCapabilities
+
+    monkeypatch.setattr(_doctor, "PLATFORM", "win32")
+    report = WindowsSandboxCapabilities(
+        native_windows=True,
+        native_api_available=available,
+        detail="API prerequisite result. No session was started; containment is not verified.",
+    )
+    monkeypatch.setattr(windows, "probe_windows_sandbox", lambda: report)
+    checks = {check.id: check for check in _doctor._sandbox_checks()}
+    assert checks["sandbox"].status == "warning"
+    assert "no fork-based sandbox" in checks["sandbox"].message
+    assert "WindowsSandboxSession" in checks["sandbox"].fix
+    native = checks["windows_sandbox"]
+    assert native.status == ("ok" if available else "warning")
+    assert "prerequisites" in native.message
+    assert "No session was started" in native.message
+    assert "containment is not verified" in native.message
+
+
+def test_windows_prerequisite_probe_failure_is_reported(monkeypatch):
+    from nooa.runtime.sandbox import windows
+
+    monkeypatch.setattr(_doctor, "PLATFORM", "win32")
+
+    def fail():
+        raise OSError("native API loading failed")
+
+    monkeypatch.setattr(windows, "probe_windows_sandbox", fail)
+    native = _doctor._sandbox_checks()[1]
+    assert native.id == "windows_sandbox"
+    assert native.status == "warning"
+    assert "native API loading failed" in native.message
+    assert "No session was started" in native.message
+    assert "containment is not verified" in native.message
+
+
+def test_non_windows_doctor_does_not_probe_windows(monkeypatch):
+    from nooa.runtime.sandbox import windows
+
+    monkeypatch.setattr(_doctor, "PLATFORM", "linux")
+
+    def unexpected():
+        pytest.fail("non-Windows doctor must not probe native Windows APIs")
+
+    monkeypatch.setattr(windows, "probe_windows_sandbox", unexpected)
+    assert _doctor._sandbox_checks() == [
+        Check("sandbox", "skipped", "OS containment is not tested by doctor.")
+    ]
+
+
+def test_successful_smoke_explicitly_does_not_verify_sandbox(monkeypatch):
+    async def shell_only(workspace):
+        assert workspace.is_dir()
+
+    monkeypatch.setattr(_doctor, "_exercise_shell", shell_only)
+    result = _doctor._smoke_check()
+    assert result.status == "ok"
+    assert "shell check does not start a sandbox or verify containment" in result.message

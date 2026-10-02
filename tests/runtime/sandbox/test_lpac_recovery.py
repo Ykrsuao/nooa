@@ -144,6 +144,34 @@ def test_normal_close_failure_keeps_the_lease_active_for_retry(enrolled, monkeyp
     assert not lease.root.parent.exists()
 
 
+def test_partial_tree_failure_keeps_live_lease_for_retry(enrolled, monkeypatch):
+    from nooa.runtime.sandbox import _windows_cleanup as cleanup
+
+    store, lease, profile = enrolled
+    locked = lease.root / "locked"
+    locked.write_bytes(b"retry me")
+    removable = lease.root / "removable"
+    removable.write_bytes(b"remove me")
+    unlink = os.unlink
+
+    def fail_locked(path, *args, **kwargs):
+        if Path(path).name == "locked":
+            raise PermissionError("synthetic locked dependency")
+        return unlink(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(cleanup.os, "unlink", fail_locked)
+        with pytest.raises(PermissionError, match="synthetic locked dependency"):
+            lease.cleanup(profile.close)
+    assert not removable.exists()
+    assert locked.read_bytes() == b"retry me"
+    assert (lease.root.parent / "owner.json").exists()
+    assert recovery.recover_orphans(store).active == [lease.root.parent.name]
+
+    lease.cleanup(profile.close)
+    assert not lease.root.parent.exists()
+
+
 def test_profile_name_collision_does_not_adopt_or_delete_existing_profile(
     enrolled, tmp_path, monkeypatch
 ):

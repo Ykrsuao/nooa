@@ -63,6 +63,7 @@ def test_imports_are_from_installed_wheels() -> None:
         "nooa_memory",
         "nooa_bench",
         "nooa.runtime.sandbox.windows",
+        "nooa.runtime.sandbox._windows_capabilities",
     ):
         module = importlib.import_module(name)
         assert module.__file__ is not None
@@ -155,6 +156,9 @@ def test_doctor_smoke_is_offline_and_does_not_create_user_config(
     assert checks["bash"]["status"] == "ok"
     if sys.platform == "win32":
         assert checks["sandbox"]["status"] == "warning"
+        assert checks["windows_sandbox"]["status"] == "ok"
+        assert "WindowsSandboxSession" in checks["windows_sandbox"]["message"]
+        assert "containment is not verified" in checks["windows_sandbox"]["message"]
     assert set(workspace.iterdir()) == before
 
 

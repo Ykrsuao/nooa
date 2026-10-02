@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Public Windows contract: configuration is available, launch remains gated."""
+"""Public Windows policy, native admission and fail-closed session contract."""
 
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ def test_public_policy_is_explicit_and_immutable(tmp_path):
 
 @pytest.mark.parametrize("workspace_access", ["read", "read_write"])
 @pytest.mark.parametrize("memory_limit_bytes", [0, 1024**3])
-async def test_public_launch_gate_precedes_all_provisioning(
+async def test_public_entry_owns_lifecycle_without_a_release_switch(
     monkeypatch, tmp_path, workspace_access, memory_limit_bytes
 ):
     from nooa.runtime.sandbox._windows_session import _WindowsSandboxSession
@@ -56,7 +56,8 @@ async def test_public_launch_gate_precedes_all_provisioning(
         WindowsSandboxSession,
     )
 
-    provision = Mock(side_effect=AssertionError("the release gate must precede provisioning"))
+    provision = Mock()
+    monkeypatch.setattr("nooa.runtime.sandbox._windows_session.sys.platform", "win32")
     monkeypatch.setattr(_WindowsSandboxSession, "_provision", provision)
     ledger = tmp_path / "ledger"
     source = tmp_path / "missing-source"
@@ -71,15 +72,20 @@ async def test_public_launch_gate_precedes_all_provisioning(
         application_modules={"missing_app": tmp_path / "missing.py"},
     )
 
-    with pytest.raises(SandboxUnavailable, match="public Windows sandbox launch is not enabled"):
-        async with owner:
-            pytest.fail("the public release gate was bypassed")
+    with pytest.raises(SandboxUnavailable, match="not ready"):
+        owner.strategy()
+    async with owner as entered:
+        assert entered is owner
+        assert owner._state == "ready"
+        provision.assert_called_once_with()
 
-    provision.assert_not_called()
+    assert owner._state == "closed"
     assert not ledger.exists() and not source.exists()
     with pytest.raises(SandboxUnavailable, match="not ready"):
         owner.strategy()
     await owner.aclose()
+    with pytest.raises(RuntimeError, match="cannot be reopened"):
+        await owner.__aenter__()
 
 
 @pytest.mark.parametrize("settings", [{"require": False}, {"network": True}, {"max_memory_mb": 1}])
@@ -123,12 +129,11 @@ def test_public_session_requires_windows_policy_and_valid_generation_config():
         )
 
 
-async def test_test_admission_does_not_bypass_native_platform_requirement(monkeypatch):
+async def test_public_entry_requires_native_windows_before_provisioning(monkeypatch):
     from nooa.runtime.sandbox import windows
     from nooa.runtime.sandbox._windows_session import _WindowsSandboxSession
 
     provision = Mock(side_effect=AssertionError("non-Windows must not provision"))
-    monkeypatch.setattr(windows, "_require_public_launch", lambda: None)
     monkeypatch.setattr(_WindowsSandboxSession, "_provision", provision)
     monkeypatch.setattr("nooa.runtime.sandbox._windows_session.sys.platform", "linux")
 
@@ -136,3 +141,42 @@ async def test_test_admission_does_not_bypass_native_platform_requirement(monkey
         async with windows.WindowsSandboxSession(windows.WindowsSandboxPolicy()):
             pytest.fail("platform check was bypassed")
     provision.assert_not_called()
+
+
+async def test_public_entry_revalidates_generation_config_before_provisioning(monkeypatch):
+    from nooa.runtime.sandbox._windows_session import _WindowsSandboxSession
+    from nooa.runtime.sandbox.windows import WindowsSandboxPolicy, WindowsSandboxSession
+
+    provision = Mock(side_effect=AssertionError("invalid config must not provision"))
+    monkeypatch.setattr(_WindowsSandboxSession, "_provision", provision)
+    config = CodeActConfig()
+    owner = WindowsSandboxSession(WindowsSandboxPolicy(), config=config)
+    # Simulate mutation bypassing the frozen model's normal assignment guard.
+    object.__setattr__(config, "execution_backend", "sandbox")
+    with pytest.raises(ValueError, match="Windows policy"):
+        await owner.__aenter__()
+    provision.assert_not_called()
+    await owner.aclose()
+
+
+@pytest.mark.parametrize("error", [SandboxUnavailable("native setup denied"), OSError("disk full")])
+async def test_public_provisioning_failure_propagates_without_fallback(monkeypatch, error):
+    from nooa.runtime.sandbox._windows_session import _WindowsSandboxSession
+    from nooa.runtime.sandbox.windows import WindowsSandboxPolicy, WindowsSandboxSession
+
+    monkeypatch.setattr("nooa.runtime.sandbox._windows_session.sys.platform", "win32")
+    close = Mock()
+
+    def provision(owner):
+        owner._runtime = Mock(close=close)
+        raise error
+
+    monkeypatch.setattr(_WindowsSandboxSession, "_provision", provision)
+    owner = WindowsSandboxSession(WindowsSandboxPolicy())
+    with pytest.raises(type(error), match=str(error)) as caught:
+        await owner.__aenter__()
+    assert caught.value is error
+    close.assert_called_once_with()
+    assert owner._state == "closed" and owner._runtime is None
+    with pytest.raises(SandboxUnavailable, match="not ready"):
+        owner.strategy()

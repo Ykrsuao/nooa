@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Opt-in, bounded same-volume I/O contention and real managed LPAC lifecycle checks."""
+"""Opt-in, bounded same-volume I/O contention through the public Windows session."""
 
 from __future__ import annotations
 
@@ -17,14 +17,13 @@ import threading
 import time
 from ctypes import wintypes
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from nooa import Agent, strategy
 from nooa.runtime.sandbox import _lpac, _lpac_runtime
-from nooa.runtime.sandbox._lpac_files import _FileGrant
-from nooa.runtime.sandbox._windows_policy import _WindowsSandboxPolicy
-from nooa.runtime.sandbox._windows_session import _WindowsSandboxSession
+from nooa.runtime.sandbox.windows import FileGrant, WindowsSandboxPolicy, WindowsSandboxSession
 from nooa.unifiedllm import FakeLLMClient, LLMResponse, ToolCall
 
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows LPAC stability")
@@ -137,7 +136,9 @@ class _Audit:
         self.native = native
         self.runtimes = []
         self.processes = []
-        retain = _WindowsSandboxSession._retain_runtime
+        self.native_processes = []
+        self.profiles = []
+        retain = WindowsSandboxSession._retain_runtime
         launch = _lpac.LpacProcess
 
         def retained(owner, runtime):
@@ -154,9 +155,10 @@ class _Audit:
                 process.close_streams()
                 raise ctypes.WinError()
             self.processes.append((process, job, handle))
+            self.native_processes.append(process._native)
             return process
 
-        monkeypatch.setattr(_WindowsSandboxSession, "_retain_runtime", retained)
+        monkeypatch.setattr(WindowsSandboxSession, "_retain_runtime", retained)
         monkeypatch.setattr(_lpac, "LpacProcess", launched)
 
     def verify(self):
@@ -166,16 +168,30 @@ class _Audit:
             assert not runtime.root.parent.exists(), "recovery entry survived cleanup"
             assert runtime._profile is not None and not runtime._profile._created
             assert not runtime._profile.sid, "profile SID allocation survived cleanup"
+            # A flag alone cannot establish that Windows deleted the profile.
+            # Profile refuses existing names; never adopt or delete a collision.
+            replacement = self.native.Profile(name=runtime._profile.name)
+            self.profiles.append(replacement)
+            replacement.close()
         for process, job, handle in self.processes:
             assert self.native._Wait(handle, 0) == 0, "worker still running"
             assert process._closed and process._native is None
             assert not process._stderr_thread.is_alive()
             assert process.connection._reader.closed and process.connection._writer.closed
             assert job._handle is None, "worker Job Object handle still owned"
+        for native_process in self.native_processes:
+            assert native_process is not None
+            assert not native_process._info.process, "native process handle still owned"
+            assert not native_process._info.thread, "native thread handle still owned"
+
+    def close_profiles(self):
+        for profile in tuple(self.profiles):
+            profile.close()
+            self.profiles.remove(profile)
 
     def close_pins(self):
         for _, _, handle in self.processes:
-            self.native.CloseHandle(handle)
+            self.native._check(self.native.CloseHandle(handle))
 
 
 @contextlib.contextmanager
@@ -196,29 +212,41 @@ def stability_case(request, tmp_path, monkeypatch, record_property):
     mode = request.param
     load = _DiskLoad(tmp_path / "pressure", enabled=mode != "idle")
     audit = _Audit(monkeypatch)
-    report = {"mode": mode, "python": sys.version, "phases": {}, "cleanup_ok": False}
+    report = {
+        "mode": mode,
+        "python": sys.version,
+        "entry": f"{WindowsSandboxSession.__module__}.{WindowsSandboxSession.__name__}",
+        "phases": {},
+        "cleanup_ok": False,
+    }
     before = _handle_count()
     start = time.perf_counter()
     try:
         load.start()
         yield load, audit, report
+        assert all(runtime.root.drive == load.root.drive for runtime in audit.runtimes)
         audit.verify()
+        load.stop()
+        assert not load.root.exists(), "I/O pressure directory survived cleanup"
         report["cleanup_ok"] = True
     finally:
         try:
             load.stop()
         finally:
-            audit.close_pins()
-            report.update(
-                seconds=time.perf_counter() - start,
-                io_cycles=load.cycles,
-                io_bytes=sum(load.written),
-                workers=len(audit.processes),
-                handles_before=before,
-                handles_after=_handle_count(),
-            )
-            record_property("stability", json.dumps(report, sort_keys=True))
-            print("Windows stability: " + json.dumps(report, sort_keys=True), flush=True)
+            try:
+                audit.close_profiles()
+            finally:
+                audit.close_pins()
+                report.update(
+                    seconds=time.perf_counter() - start,
+                    io_cycles=load.cycles,
+                    io_bytes=sum(load.written),
+                    workers=len(audit.processes),
+                    handles_before=before,
+                    handles_after=_handle_count(),
+                )
+                record_property("stability", json.dumps(report, sort_keys=True))
+                print("Windows stability: " + json.dumps(report, sort_keys=True), flush=True)
     assert report["seconds"] < 180, "lifecycle exceeded the existing acceptance budget"
 
 
@@ -260,15 +288,15 @@ async def test_repeated_managed_lifecycle_under_io(stability_case, tmp_path, mon
     load, audit, report = stability_case
     output = tmp_path / "output.txt"
     output.write_bytes(b"before")
-    policy = _WindowsSandboxPolicy(
+    policy = WindowsSandboxPolicy(
         workspace_access="read_write",
-        files={"output": _FileGrant(output, writable=True)},
+        files={"output": FileGrant(output, writable=True)},
         tools=("slow",),
         cell_timeout_s=1,
         broker_timeout_s=2,
         recovery_directory=tmp_path / "ledger",
     )
-    owner = _WindowsSandboxSession(
+    owner = WindowsSandboxSession(
         policy,
         application_modules={"stability_app": Path(__file__).with_name("lpac_test_app.py")},
         application_requirements=("PyYAML>=6",),
@@ -343,11 +371,15 @@ async def test_repeated_managed_lifecycle_under_io(stability_case, tmp_path, mon
         with _phase(report, load, "cancel_close"):
             await _cancel_at_boundary(asyncio.create_task(owner.aclose()), entered, release)
         assert owner._state == "closed"
+        await owner.aclose()
+        await owner.aclose()
+        assert owner._runtime is None and owner._files is None
+        assert not owner._executors and not owner._active
         assert output.read_bytes() == b"after"
         output.unlink()  # A pinned broker handle must no longer prevent deletion.
         if load.enabled:
-            for phase in ("provision", "cancel_close"):
-                assert report["phases"][phase]["io_cycles"] > 0, "pressure stopped too early"
+            for phase in report["phases"].values():
+                assert phase["io_cycles"] > 0, "pressure stopped too early"
     finally:
         await owner.aclose()
 
@@ -369,8 +401,8 @@ async def test_cancel_real_staging_under_io(stability_case, tmp_path, monkeypatc
             yield pair
 
     monkeypatch.setattr(_lpac_runtime, "_package_files", files_at_boundary)
-    owner = _WindowsSandboxSession(
-        _WindowsSandboxPolicy(recovery_directory=tmp_path / "ledger"),
+    owner = WindowsSandboxSession(
+        WindowsSandboxPolicy(recovery_directory=tmp_path / "ledger"),
         application_requirements=("PyYAML>=6",),
     )
     try:
@@ -378,11 +410,47 @@ async def test_cancel_real_staging_under_io(stability_case, tmp_path, monkeypatc
             await _cancel_at_boundary(asyncio.create_task(owner.__aenter__()), entered, release)
         assert owner._state == "closed" and owner._runtime is None
         assert not owner._executors and not audit.processes
+        await owner.aclose()
+        await owner.aclose()
         if load.enabled:
             assert report["phases"]["cancel_provision"]["io_cycles"] > 0
     finally:
         release.set()
         await owner.aclose()
+
+
+def test_profile_audit_retains_failed_close_for_teardown(tmp_path, monkeypatch):
+    audit = _Audit(monkeypatch)
+    audit.runtimes.append(
+        SimpleNamespace(
+            _closed=True,
+            root=tmp_path / "removed-entry" / "runtime",
+            _profile=SimpleNamespace(_created=False, sid=None, name="owned-profile"),
+        )
+    )
+    calls = []
+
+    class Probe:
+        def __init__(self, *, name):
+            assert name == "owned-profile"
+            self.closed = False
+
+        def close(self):
+            calls.append(self)
+            if len(calls) == 1:
+                raise OSError("injected profile delete failure")
+            self.closed = True
+
+    monkeypatch.setattr(audit.native, "Profile", Probe)
+    try:
+        with pytest.raises(OSError, match="injected profile delete failure"):
+            audit.verify()
+        assert audit.profiles == calls and not calls[0].closed
+    finally:
+        audit.close_profiles()
+    assert len(calls) == 2 and calls[0].closed and not audit.profiles
+    audit.close_profiles()
+    assert len(calls) == 2
 
 
 def test_io_load_performs_real_bounded_work_and_removes_only_its_directory(tmp_path):

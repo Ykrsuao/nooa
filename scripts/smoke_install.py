@@ -18,6 +18,7 @@ NATIVE_TESTS = (
     "test_windows_job.py",
     "test_spawn_executor.py",
     "test_appcontainer.py",
+    "test_windows_cleanup.py",
     "test_lpac_executor.py",
     "test_lpac_codeact.py",
     "test_lpac_runtime.py",
@@ -28,6 +29,7 @@ NATIVE_TESTS = (
     "test_lpac_directories.py",
     "test_windows_session.py",
     "test_windows_api.py",
+    "test_windows_capabilities.py",
     "test_platform_support.py",
 )
 

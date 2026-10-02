@@ -166,40 +166,65 @@ uv run nooa doctor --smoke
 uv run nooa doctor --json --port 5002
 ```
 
-The default checks are read-only and do not load credentials. `--smoke` runs
-Unicode file/command, cancellation, recovery, and cleanup checks in a temporary
-workspace. Missing optional dependencies and the Windows sandbox limitation are
-warnings; blocking errors return exit status 1. See the
+The default checks do not load credentials. On Windows, `sandbox` reports the
+fork backend limitation as a warning, while `windows_sandbox` separately checks
+whether native AppContainer and Job Object API bindings load. That prerequisite
+check starts no sandbox and does not verify containment. `--smoke` runs only
+shell Unicode file/command, cancellation, recovery, and cleanup checks in a
+temporary workspace. Blocking errors return exit status 1. See the
 [CLI diagnostics documentation](packages/nooa-cli/README.md#environment-diagnostics)
 for checks, exit codes, and JSON output.
 
-Not yet available on Windows:
+For isolated native Windows Agent calls, explicitly enter a
+`WindowsSandboxSession` and attach its strategy to the Agent method:
 
-- **The public OS-level sandbox backend.** Its worker relies on `fork`, so
+```python
+from nooa import Agent, strategy
+from nooa.runtime.sandbox.windows import WindowsSandboxPolicy, WindowsSandboxSession
+
+async def run(llm):
+    policy = WindowsSandboxPolicy(inputs={"seed.txt": b"A short input document."})
+    async with WindowsSandboxSession(policy) as session:
+        backend = session.strategy()
+
+        class Reader(Agent, llm=llm):
+            @strategy(backend)
+            async def summarize(self) -> str:
+                """Read ../inputs/seed.txt and summarize it."""
+                ...
+
+        return await Reader().summarize()
+```
+
+The policy defaults to a read-only disposable workspace. Explicit named file,
+directory and fixed-HTTPS brokers provide bounded parent-side operations; memory
+and CPU budgets use native Windows units. Calls are sequential, use fresh
+workers and share workspace files. Await every call before leaving the context.
+Install application dependencies first, then name them in
+`application_requirements`; stage application source files explicitly with
+`application_modules`. See the [policy and lifecycle contract](docs/windows-sandbox-policy.md#public-windows-interface)
+for dependency, cancellation and cleanup-retry limits, and the
+[public-entry verification record](docs/windows-public-entry-20261002.md) for
+acceptance scope.
+
+Current Windows limits:
+
+- **The fork sandbox backend.** Its worker relies on `fork`, so
   `CodeActConfig(execution_backend="sandbox")` raises `SandboxUnavailable`. The default
-  in-process backend is unaffected.
+  in-process backend is unaffected. The explicit Windows session does not add
+  an `execution_backend="windows"` value or translate `SandboxConfig`.
 - **The `SIGUSR2` debug dump.** Windows has no `SIGUSR2`; call
   `nooa.runtime.debug_handler.dump_debug_info()` instead.
 - **Secret file permissions.** Unix permission bits (`0o600`) are not enforced. Secrets
   saved under your user profile are protected by its default ACL instead.
 
-The shared Windows Job Object module provides optional process-tree memory,
-CPU-time, and process-count limits. An internal spawn/IPC runner now exercises
-parent-side tools, typed cells, cancellation and worker cleanup with these jobs.
-Those runners alone provide no file, network or parent-process isolation. A separate
-internal LPAC launcher now runs a private standard-library Python with read-only input
-snapshots, a writable disposable workspace, and negative tests for file, network,
-parent-handle and child-process access. An internal persistent LPAC worker now
-stages core framework dependencies and reuses the cell loop with explicitly granted
-parent callbacks. Its private asyncio runtime supports tasks, timers and thread
-wakeups, not asynchronous descriptor I/O. An internal CodeAct strategy now connects
-real Agent calls using explicitly staged Python modules, declared data types and
-granted method names. Explicit installed application dependencies (including tested
-native extensions) and parent-side tool argument predicates are supported internally.
-Named exact-file handles and fixed-URL HTTPS brokers are available internally.
-Broader dependency compatibility, directory and general HTTP policies, live host
-directory grants and public sandbox configuration remain incomplete; this strategy
-is not selectable as the public Windows sandbox.
+The Windows session owns an LPAC runtime, private dependency copies, workers,
+brokers and cleanup. Direct network sockets are denied; fixed-HTTPS grants do
+not grant worker networking. Its private asyncio runtime supports tasks, timers
+and thread wakeups, with no async descriptor I/O or subprocess support. Direct
+live-host mounts, general HTTP access and broad application compatibility remain
+outside this interface. Filesystem staging and cleanup drain their work before
+propagating cancellation, so storage delays remain an operational limitation.
 See the
 [Windows sandbox status and next steps](docs/windows-sandbox.md).
 

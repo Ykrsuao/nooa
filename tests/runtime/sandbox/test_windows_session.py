@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Managed Windows policy and lifecycle tests, with real LPAC Agent controls."""
+"""Public Windows policy and lifecycle tests, with real LPAC Agent controls."""
 
 from __future__ import annotations
 
@@ -21,14 +21,16 @@ from nooa.config import CodeActConfig
 from nooa.events import PythonOutput
 from nooa.runtime.restrictions import DEFAULT_BLOCKED_MODULES, RestrictionsConfig
 from nooa.runtime.sandbox import _windows_session as managed
-from nooa.runtime.sandbox._lpac_directories import _DirectoryGrant
-from nooa.runtime.sandbox._lpac_files import _FileGrant
-from nooa.runtime.sandbox._lpac_http import _HttpsEndpoint
 from nooa.runtime.sandbox._windows_context import _names, _render_windows_policy
-from nooa.runtime.sandbox._windows_policy import _WindowsSandboxPolicy
-from nooa.runtime.sandbox._windows_session import _WindowsSandboxSession
 from nooa.runtime.sandbox.config import SandboxConfig
 from nooa.runtime.sandbox.errors import SandboxUnavailable
+from nooa.runtime.sandbox.windows import (
+    DirectoryGrant,
+    FileGrant,
+    HttpsEndpoint,
+    WindowsSandboxPolicy,
+    WindowsSandboxSession,
+)
 from nooa.unifiedllm import FakeLLMClient, LLMResponse, ToolCall
 
 pytestmark = pytest.mark.timeout(180)
@@ -57,11 +59,11 @@ _spec.loader.exec_module(app)
         ("inputs", {"../escape": b"a"}),
         ("inputs", {"CON": b"a"}),
         ("inputs", {"a": "text"}),
-        ("files", {"a": _FileGrant("a", writable=1)}),
-        ("directories", {"a": _FileGrant("a")}),
-        ("https", {"a": _HttpsEndpoint("http://example.com", "93.184.216.34")}),
-        ("https", {"a": _HttpsEndpoint("https://example.com", "127.0.0.1")}),
-        ("https", {"a": _HttpsEndpoint("https://user:pass@example.com", "93.184.216.34")}),
+        ("files", {"a": FileGrant("a", writable=1)}),
+        ("directories", {"a": FileGrant("a")}),
+        ("https", {"a": HttpsEndpoint("http://example.com", "93.184.216.34")}),
+        ("https", {"a": HttpsEndpoint("https://example.com", "127.0.0.1")}),
+        ("https", {"a": HttpsEndpoint("https://user:pass@example.com", "93.184.216.34")}),
         ("memory_limit_bytes", True),
         ("memory_limit_bytes", -1),
         ("memory_limit_bytes", 2**64),
@@ -74,7 +76,7 @@ _spec.loader.exec_module(app)
 )
 def test_policy_refuses_invalid_grants_and_units(field, value):
     with pytest.raises((ValueError, TypeError)):
-        _WindowsSandboxPolicy(**{field: value})
+        WindowsSandboxPolicy(**{field: value})
 
 
 @pytest.mark.parametrize(
@@ -90,14 +92,14 @@ def test_policy_refuses_invalid_grants_and_units(field, value):
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), -1, True, "3"])
 def test_policy_refuses_invalid_deadlines(name, value):
     with pytest.raises(ValueError):
-        _WindowsSandboxPolicy(**{name: value})
+        WindowsSandboxPolicy(**{name: value})
 
 
 def test_policy_snapshots_inputs_and_collections(tmp_path):
     inputs = {"a": b"data"}
-    files = {"file": _FileGrant(tmp_path / "a")}
+    files = {"file": FileGrant(tmp_path / "a")}
     tools = ["allowed"]
-    policy = _WindowsSandboxPolicy(inputs=inputs, files=files, tools=tools)
+    policy = WindowsSandboxPolicy(inputs=inputs, files=files, tools=tools)
     inputs["a"] = b"changed"
     files.clear()
     tools.append("forbidden")
@@ -107,7 +109,7 @@ def test_policy_snapshots_inputs_and_collections(tmp_path):
         policy.inputs["b"] = b"other"
     with pytest.raises(dataclasses.FrozenInstanceError):
         policy.cell_timeout_s = 0
-    assert _WindowsSandboxPolicy(cell_timeout_s=None, broker_timeout_s=0).cell_timeout_s is None
+    assert WindowsSandboxPolicy(cell_timeout_s=None, broker_timeout_s=0).cell_timeout_s is None
 
 
 def test_policy_refuses_async_predicates_and_unknown_fields():
@@ -115,13 +117,13 @@ def test_policy_refuses_async_predicates_and_unknown_fields():
         return True
 
     with pytest.raises(TypeError, match="synchronous"):
-        _WindowsSandboxPolicy(tools=("allowed",), tool_policies={"allowed": predicate})
+        WindowsSandboxPolicy(tools=("allowed",), tool_policies={"allowed": predicate})
     with pytest.raises(TypeError):
-        _WindowsSandboxPolicy(network=True)
+        WindowsSandboxPolicy(network=True)
 
 
 def test_context_default_policy_does_not_claim_linux_or_live_agent_semantics():
-    text = _render_windows_policy(_WindowsSandboxPolicy())
+    text = _render_windows_policy(WindowsSandboxPolicy())
     for expected in (
         "Windows LPAC",
         "read-only",
@@ -148,12 +150,12 @@ def test_context_default_policy_does_not_claim_linux_or_live_agent_semantics():
 @pytest.mark.parametrize("writable", [False, True])
 def test_context_named_broker_permissions_and_sensitive_values(tmp_path, writable):
     secret = "not-for-the-model"
-    policy = _WindowsSandboxPolicy(
+    policy = WindowsSandboxPolicy(
         workspace_access="read_write",
         inputs={"seed.txt": secret.encode()},
-        files={"output": _FileGrant(tmp_path / secret, writable=writable)},
-        directories={"source": _DirectoryGrant(tmp_path / secret, writable=writable)},
-        https={"site": _HttpsEndpoint(f"https://example.com/?token={secret}", "93.184.216.34")},
+        files={"output": FileGrant(tmp_path / secret, writable=writable)},
+        directories={"source": DirectoryGrant(tmp_path / secret, writable=writable)},
+        https={"site": HttpsEndpoint(f"https://example.com/?token={secret}", "93.184.216.34")},
         tools=("scale",),
         tool_policies={"scale": lambda args: secret not in str(args)},
         cell_timeout_s=None,
@@ -199,14 +201,14 @@ def test_context_named_broker_permissions_and_sensitive_values(tmp_path, writabl
 
 def test_context_mixed_grants_report_only_writable_names(tmp_path):
     text = _render_windows_policy(
-        _WindowsSandboxPolicy(
+        WindowsSandboxPolicy(
             files={
-                "source": _FileGrant(tmp_path / "a"),
-                "output": _FileGrant(tmp_path / "b", True),
+                "source": FileGrant(tmp_path / "a"),
+                "output": FileGrant(tmp_path / "b", True),
             },
             directories={
-                "source_dir": _DirectoryGrant(tmp_path / "c"),
-                "output_dir": _DirectoryGrant(tmp_path / "d", True),
+                "source_dir": DirectoryGrant(tmp_path / "c"),
+                "output_dir": DirectoryGrant(tmp_path / "d", True),
             },
         )
     )
@@ -226,7 +228,7 @@ def test_context_escapes_resource_names_as_data():
 
 
 def test_context_contract_covers_every_policy_field():
-    assert {field.name for field in dataclasses.fields(_WindowsSandboxPolicy)} == {
+    assert {field.name for field in dataclasses.fields(WindowsSandboxPolicy)} == {
         "workspace_access",
         "inputs",
         "files",
@@ -275,7 +277,7 @@ def fake_provision(monkeypatch):
         owner._files = _Resource("files", events)
         owner._directories = _Resource("directories", events)
 
-    monkeypatch.setattr(_WindowsSandboxSession, "_provision", provision)
+    monkeypatch.setattr(WindowsSandboxSession, "_provision", provision)
     return events
 
 
@@ -296,20 +298,20 @@ async def test_generation_config_is_refused_before_provision(monkeypatch, config
     from unittest.mock import Mock
 
     provision = Mock(side_effect=AssertionError("invalid config provisioned a runtime"))
-    monkeypatch.setattr(_WindowsSandboxSession, "_provision", provision)
+    monkeypatch.setattr(WindowsSandboxSession, "_provision", provision)
     with pytest.raises(ValueError):
-        async with _WindowsSandboxSession(_WindowsSandboxPolicy(), config=config):
+        async with WindowsSandboxSession(WindowsSandboxPolicy(), config=config):
             pytest.fail("invalid config was admitted")
     provision.assert_not_called()
 
 
 async def test_session_binds_generation_options_before_provision(monkeypatch):
     monkeypatch.setattr(managed.sys, "platform", "win32")
-    monkeypatch.setattr(_WindowsSandboxSession, "_provision", lambda owner: None)
+    monkeypatch.setattr(WindowsSandboxSession, "_provision", lambda owner: None)
     config = CodeActConfig(max_retries=6, max_iterations=4, prefill=None)
-    policy = _WindowsSandboxPolicy(cell_timeout_s=0.75, broker_timeout_s=2)
+    policy = WindowsSandboxPolicy(cell_timeout_s=0.75, broker_timeout_s=2)
 
-    async with _WindowsSandboxSession(policy, config=config) as owner:
+    async with WindowsSandboxSession(policy, config=config) as owner:
         backend = owner.strategy()
         assert backend.config.max_retries == 6
         assert backend.config.max_iterations == 4
@@ -328,7 +330,7 @@ async def test_session_binds_generation_options_before_provision(monkeypatch):
 
 
 async def test_lifecycle_cleanup_order_and_one_shot(fake_provision):
-    owner = _WindowsSandboxSession(_WindowsSandboxPolicy())
+    owner = WindowsSandboxSession(WindowsSandboxPolicy())
     async with owner:
         owner._executors.append(_Resource("executor", fake_provision))
     assert fake_provision == ["executor", "directories", "files", "runtime"]
@@ -340,7 +342,7 @@ async def test_lifecycle_cleanup_order_and_one_shot(fake_provision):
 
 @pytest.mark.parametrize("resource", ["executor", "directories", "files", "runtime"])
 async def test_failed_cleanup_retains_ownership_and_can_retry(fake_provision, resource):
-    owner = _WindowsSandboxSession(_WindowsSandboxPolicy())
+    owner = WindowsSandboxSession(WindowsSandboxPolicy())
     await owner.__aenter__()
     executor = _Resource("executor", fake_provision)
     owner._executors.append(executor)
@@ -359,7 +361,7 @@ async def test_failed_cleanup_retains_ownership_and_can_retry(fake_provision, re
 
 
 async def test_active_calls_refuse_concurrency_and_close(fake_provision):
-    owner = _WindowsSandboxSession(_WindowsSandboxPolicy())
+    owner = WindowsSandboxSession(WindowsSandboxPolicy())
     async with owner:
         owner._begin_call()
         with pytest.raises(SandboxUnavailable, match="concurrent or nested"):
@@ -373,7 +375,7 @@ async def test_active_calls_refuse_concurrency_and_close(fake_provision):
 
 
 async def test_cross_loop_use_is_refused(fake_provision):
-    async with _WindowsSandboxSession(_WindowsSandboxPolicy()) as owner:
+    async with WindowsSandboxSession(WindowsSandboxPolicy()) as owner:
 
         async def other_loop():
             with pytest.raises(RuntimeError, match="another event loop"):
@@ -385,14 +387,14 @@ async def test_cross_loop_use_is_refused(fake_provision):
 
 async def test_cancelled_provision_waits_for_thread_then_cleans(monkeypatch, fake_provision):
     started, release = threading.Event(), threading.Event()
-    owner = _WindowsSandboxSession(_WindowsSandboxPolicy())
+    owner = WindowsSandboxSession(WindowsSandboxPolicy())
 
     def provision(owner):
         started.set()
         assert release.wait(10)
         owner._runtime = _Resource("runtime", fake_provision)
 
-    monkeypatch.setattr(_WindowsSandboxSession, "_provision", provision)
+    monkeypatch.setattr(WindowsSandboxSession, "_provision", provision)
     task = asyncio.create_task(owner.__aenter__())
     try:
         assert await asyncio.to_thread(started.wait, 10)
@@ -420,7 +422,7 @@ async def test_cancelled_close_drains_despite_repeated_cancellation(fake_provisi
             await release.wait()
             fake_provision.append("executor")
 
-    owner = _WindowsSandboxSession(_WindowsSandboxPolicy())
+    owner = WindowsSandboxSession(WindowsSandboxPolicy())
     await owner.__aenter__()
     owner._executors.append(SlowExecutor())
     task = asyncio.create_task(owner.aclose())
@@ -445,8 +447,8 @@ async def test_staging_failure_closes_retained_runtime(monkeypatch, fake_provisi
         owner._runtime = _Resource("runtime", fake_provision)
         raise ValueError("staging refused")
 
-    monkeypatch.setattr(_WindowsSandboxSession, "_provision", provision)
-    owner = _WindowsSandboxSession(_WindowsSandboxPolicy())
+    monkeypatch.setattr(WindowsSandboxSession, "_provision", provision)
+    owner = WindowsSandboxSession(WindowsSandboxPolicy())
     with pytest.raises(ValueError, match="staging refused"):
         await owner.__aenter__()
     assert fake_provision == ["runtime"] and owner._state == "closed"
@@ -462,7 +464,7 @@ async def test_constructor_rollback_failure_retains_retryable_runtime(monkeypatc
         raise OSError("constructor rollback failed")
 
     monkeypatch.setattr(managed, "_AppContainerPython", allocate)
-    owner = _WindowsSandboxSession(_WindowsSandboxPolicy())
+    owner = WindowsSandboxSession(WindowsSandboxPolicy())
     with pytest.raises(OSError, match="cleanup failure"):
         await owner.__aenter__()
     assert owner._runtime is resource
@@ -472,14 +474,14 @@ async def test_constructor_rollback_failure_retains_retryable_runtime(monkeypatc
 
 async def test_non_windows_refuses_before_provision(monkeypatch):
     monkeypatch.setattr(managed.sys, "platform", "linux")
-    owner = _WindowsSandboxSession(_WindowsSandboxPolicy())
+    owner = WindowsSandboxSession(WindowsSandboxPolicy())
     with pytest.raises(SandboxUnavailable, match="native Windows"):
         await owner.__aenter__()
     assert owner._runtime is None and owner._state == "new"
 
 
 async def test_managed_teardown_failure_blocks_new_calls_and_retries(fake_provision):
-    owner = _WindowsSandboxSession(_WindowsSandboxPolicy())
+    owner = WindowsSandboxSession(WindowsSandboxPolicy())
     await owner.__aenter__()
     # This test exercises strategy cleanup itself, without allocating a worker.
     owner._files = owner._directories = None
@@ -497,7 +499,7 @@ async def test_managed_teardown_failure_blocks_new_calls_and_retries(fake_provis
 
 
 async def test_managed_context_requires_ready_session_and_uses_static_windows_block(fake_provision):
-    owner = _WindowsSandboxSession(_WindowsSandboxPolicy())
+    owner = WindowsSandboxSession(WindowsSandboxPolicy())
     async with owner:
         owner._files = owner._directories = None
         backend = owner.strategy()
@@ -550,12 +552,12 @@ async def test_provisioning_maps_grants_limits_and_staging(monkeypatch, tmp_path
     monkeypatch.setattr(managed, "_DirectoryBroker", factory("directories"))
     monkeypatch.setattr(managed, "_HttpsBroker", factory("https"))
     monkeypatch.setattr(managed, "stage_framework", stage)
-    policy = _WindowsSandboxPolicy(
+    policy = WindowsSandboxPolicy(
         workspace_access="read_write",
         inputs={"a": b"a"},
-        files={"input": _FileGrant(tmp_path / "input")},
-        directories={"output": _DirectoryGrant(tmp_path / "output", writable=True)},
-        https={"site": _HttpsEndpoint("https://example.com/data", "93.184.216.34")},
+        files={"input": FileGrant(tmp_path / "input")},
+        directories={"output": DirectoryGrant(tmp_path / "output", writable=True)},
+        https={"site": HttpsEndpoint("https://example.com/data", "93.184.216.34")},
         max_file_bytes=123,
         max_directory_entries=12,
         max_response_bytes=234,
@@ -569,7 +571,7 @@ async def test_provisioning_maps_grants_limits_and_staging(monkeypatch, tmp_path
         recovery_directory=tmp_path / "recovery",
     )
     modules = {"app": tmp_path / "app.py"}
-    async with _WindowsSandboxSession(
+    async with WindowsSandboxSession(
         policy, application_modules=modules, application_requirements=("PyYAML>=6",)
     ) as owner:
         backend = owner.strategy()
@@ -632,26 +634,17 @@ async def _compute(agent, *args):
         raise
 
 
-@pytest.fixture
-def public_session(monkeypatch):
-    from nooa.runtime.sandbox import windows
-
-    # Test-only admission; the installed public entry has no user-facing opt-in.
-    monkeypatch.setattr(windows, "_require_public_launch", lambda: None)
-    return windows.WindowsSandboxSession
-
-
 @native
-async def test_managed_agent_brokers_denials_fresh_workers_and_cleanup(tmp_path, public_session):
+async def test_managed_agent_brokers_denials_fresh_workers_and_cleanup(tmp_path):
     source = tmp_path / "source"
     source.mkdir()
     (source / "input.txt").write_bytes(b"source")
     output = tmp_path / "output.txt"
     output.write_bytes(b"before")
-    policy = _WindowsSandboxPolicy(
+    policy = WindowsSandboxPolicy(
         inputs={"seed.txt": b"snapshot"},
-        files={"output": _FileGrant(output, writable=True)},
-        directories={"source": _DirectoryGrant(source)},
+        files={"output": FileGrant(output, writable=True)},
+        directories={"source": DirectoryGrant(source)},
         tools=("scale",),
         tool_policies={"scale": lambda args: args["number"] < 10},
         memory_limit_bytes=1024**3,
@@ -659,7 +652,7 @@ async def test_managed_agent_brokers_denials_fresh_workers_and_cleanup(tmp_path,
         broker_timeout_s=2,
         frame_timeout_s=3,
     )
-    owner = public_session(
+    owner = WindowsSandboxSession(
         policy,
         config=CodeActConfig(
             max_retries=6,
@@ -730,9 +723,9 @@ async def test_managed_agent_brokers_denials_fresh_workers_and_cleanup(tmp_path,
 
 
 @native
-async def test_managed_agent_cancellation_and_broker_deadline(tmp_path, public_session):
+async def test_managed_agent_cancellation_and_broker_deadline(tmp_path):
     started, stopped = asyncio.Event(), asyncio.Event()
-    owner = public_session(_WindowsSandboxPolicy(tools=("slow",), broker_timeout_s=0.15))
+    owner = WindowsSandboxSession(WindowsSandboxPolicy(tools=("slow",), broker_timeout_s=0.15))
     async with owner:
         root = owner._runtime.root
         backend = owner.strategy()
@@ -765,12 +758,14 @@ async def test_managed_agent_cancellation_and_broker_deadline(tmp_path, public_s
         finally:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+        assert await Demo(llm=_responses("return_result(9)")).compute() == 9
+        assert not owner._executors and not owner._active
     assert not root.exists()
 
 
 @native
-async def test_managed_strategy_refuses_public_policy_and_deadline_mutation(public_session):
-    async with public_session(_WindowsSandboxPolicy()) as owner:
+async def test_managed_strategy_refuses_public_policy_and_deadline_mutation():
+    async with WindowsSandboxSession(WindowsSandboxPolicy()) as owner:
         with pytest.raises(ValueError, match="cell_timeout_s"):
             owner.strategy(config=CodeActConfig(cell_timeout=0.5))
         with pytest.raises(ValueError, match="public backend"):
@@ -790,13 +785,13 @@ async def test_managed_strategy_refuses_public_policy_and_deadline_mutation(publ
 
 
 @native
-async def test_managed_staged_application_recovery_and_writable_workspace(tmp_path, public_session):
-    policy = _WindowsSandboxPolicy(
+async def test_managed_staged_application_recovery_and_writable_workspace(tmp_path):
+    policy = WindowsSandboxPolicy(
         workspace_access="read_write",
         cell_timeout_s=1,
         recovery_directory=tmp_path / "ledger",
     )
-    owner = public_session(
+    owner = WindowsSandboxSession(
         policy,
         application_modules={"managed_lpac_app": _APP_SOURCE},
         application_requirements=("PyYAML>=6",),

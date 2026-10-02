@@ -1,13 +1,15 @@
 # Windows Sandbox Policy Contract
 
-This records the public configuration gap, refusal contract and separate staged
-Windows policy, not a backend registration or Linux-policy translator. The public `SandboxedExecutor`
-still requires `fork`. Native Windows therefore rejects every public sandbox
-request, including `require=False` and configurations with every guard disabled.
-An explicit `execution_backend="inprocess"` remains host execution, not isolation.
+The explicit public `WindowsSandboxSession` provisions a native Windows LPAC
+runtime from a `WindowsSandboxPolicy` and supplies a strategy for Agent calls.
+This is separate from the fork-based `SandboxedExecutor` and its `SandboxConfig`:
+`CodeActConfig(execution_backend="sandbox")` still requires `fork` and fails on
+native Windows, including with `require=False` or every guard disabled. There
+is no `execution_backend="windows"` selector or Linux-policy translation.
+The ordinary `execution_backend="inprocess"` strategy remains host execution.
 
 The internal `_LpacCodeActStrategy` accepts only an unchanged `SandboxConfig()`
-as a sentinel meaning "no public policy supplied." **Accepting that sentinel
+as a sentinel meaning "no fork policy supplied." **Accepting that sentinel
 does not mean LPAC implements the public defaults.** In particular, the internal
 runtime defaults to a disposable writable workspace, while public `workspace=None`
 does not grant one. A caller can now provision an internal read-only workspace
@@ -20,60 +22,114 @@ the Linux configuration.
 See [Windows implementation status](windows-sandbox.md) for the native mechanisms
 and their verification history.
 
-## Staged Public Windows Interface
+<a id="staged-public-windows-interface"></a>
+
+## Public Windows Interface
+
+As of 2026-10-02, the public session directly inherits the managed lifecycle;
+the unconditional launch refusal has been removed. Source and installed
+acceptance for this entry are recorded in the
+[stability and full installed verification](windows-public-stability-20261002.md).
+The full installed suite passed all 615 tests in 1870.13 seconds with zero
+failures, errors or skips, including all seven real public-entry/managed-HTTPS
+cases without admission substitution. Six public-entry native stability cases
+passed under idle and bounded I/O conditions, with both loaded paths verified
+again after a test-audit cleanup fix and all six fast checks passing. The
+current configured Pyright scope has 320 files with zero errors or warnings. The
+[initial public-entry verification](windows-public-entry-20261002.md) records
+the earlier targeted 262-case installed run.
+The [earlier complete installed acceptance](windows-native-full-20261002.md)
+and [cleanup follow-up](windows-cleanup-20261002.md) predate this entry change.
+Their results establish earlier staging and cleanup behavior, not acceptance
+of the current public entry. Historical verification sections below retain
+their original scope, gate substitutions and limitations.
+
+This completes the documented native Windows sandbox v1 acceptance on Python
+3.12.13. A unified backend selector, automatic orphan-resource cleanup and
+disk-full or sustained-saturation validation are follow-up work. Existing
+worker timeout recovery and explicit cleanup/retry remain part of v1. See the
+[delivery record](windows-v1-delivery-20261002.md) and
+[operational limits](windows-sandbox.md#v1-acceptance-and-follow-up-scope).
 
 `nooa.runtime.sandbox.windows` exports `WindowsSandboxPolicy`,
-`WindowsSandboxSession`, `FileGrant`, `DirectoryGrant` and `HttpsEndpoint`.
+`WindowsSandboxSession`, `FileGrant`, `DirectoryGrant`, `HttpsEndpoint`,
+`WindowsSandboxCapabilities` and `probe_windows_sandbox`.
 The policy and grants are aliases of the existing validated native types; the
-session wraps the existing managed lifecycle. They are deliberately separate
+session inherits the existing managed lifecycle. They are deliberately separate
 from `SandboxConfig`, not a translation of Linux permissions or resource units.
 
-Policy construction is available for configuration validation on any platform:
+Policy construction is available for configuration validation on any platform.
+Entry requires native Windows and provisions the owned runtime and brokers;
+obtain the strategy only after entry succeeds:
 
 ```python
-from nooa.runtime.sandbox.windows import WindowsSandboxPolicy, WindowsSandboxSession
+from pathlib import Path
+from nooa import Agent, strategy
+from nooa.runtime.sandbox.windows import (
+    DirectoryGrant,
+    WindowsSandboxPolicy,
+    WindowsSandboxSession,
+)
 
 policy = WindowsSandboxPolicy(
     workspace_access="read",
-    inputs={"seed.txt": b"snapshot"},
+    directories={"docs": DirectoryGrant(Path(r"C:\project\docs"))},
     memory_limit_bytes=1024**3,
 )
-session = WindowsSandboxSession(policy)
+
+async def run(llm):
+    async with WindowsSandboxSession(policy) as session:
+        backend = session.strategy()
+
+        class Reader(Agent, llm=llm):
+            @strategy(backend)
+            async def summarize(self, filename: str) -> str:
+                """Summarize the file using await self.read_directory('docs', filename)."""
+                ...
+
+        return await Reader().summarize("guide.txt")
 ```
 
-**Public launch remains disabled.** Entering this session raises
-`SandboxUnavailable` before runtime, broker, profile or recovery provisioning,
-even on Windows with a valid policy. `session.strategy()` requires successful
-entry and is therefore unavailable through the installed public entry. There
-is no constructor flag, environment switch or unisolated fallback.
+The example requires an existing directory and file at the granted host path.
+`inputs={"seed.txt": b"snapshot"}` instead supplies an immutable snapshot at
+`../inputs/seed.txt` relative to the disposable workspace. The default workspace
+is read-only; use `workspace_access="read_write"` for disposable worker writes.
+Provisioning failures propagate after owned cleanup; no unisolated fallback is
+provided. Importing or constructing a policy does not provision native resources.
 
-Importing the module does not register a CodeAct backend, add a start method,
-change `SandboxedExecutor`, or advertise Windows support through capability
-probes or doctor. The names are staged declarations, not a supported execution
-path or a completed release gate.
+The separate read-only `probe_windows_sandbox()` returns
+`WindowsSandboxCapabilities` with `native_windows`, `native_api_available`,
+`detail`, and `containment_verified=False`. On Windows it loads AppContainer
+and Job Object bindings and resolves API symbols without calling native
+functions or creating profiles, jobs, workers or sandbox files. A successful
+probe confirms prerequisites only, not successful launch or containment.
+Non-Windows probes do not import native bindings.
 
-Native acceptance tests replace only the launch gate in a pytest fixture, then
-exercise this session class with real LPAC provisioning, grants, workers,
-brokers and cleanup. Platform admission and containment remain active. That
-test-only substitution is not a caller opt-in and does not establish that the
-installed public entry can launch.
+`nooa doctor` reports fork-backend support in `sandbox` and Windows prerequisites
+separately in `windows_sandbox` (`ok` when bindings load, otherwise `warning` on
+Windows). `--smoke` exercises the shell only. Neither diagnostic starts an LPAC
+session. Current real managed-session and HTTPS acceptance tests use the public
+entry without a launch-gate substitution; consult their verification record
+for completed results rather than treating prerequisite detection as acceptance.
 
-## Field Mapping
+<a id="field-mapping"></a>
 
-Every non-default public field is currently refused by the internal strategy.
+## Fork SandboxConfig Field Mapping
+
+Every non-default `SandboxConfig` field is refused by the Windows strategy.
 "Candidate" below means a possible future mapping that still needs an explicit
 adapter and acceptance tests; it does not mean that mapping is available today.
 Unknown fields are refused by `CodeActConfig`, `SandboxConfig` and `FileRule`,
 including Windows-specific units or access flags passed to the Linux schema.
 
-| Public field (default) | Current public meaning | Internal Windows mechanism and required decision |
+| SandboxConfig field (default) | Fork backend meaning | Windows mechanism and translation limits |
 | --- | --- | --- |
-| `filesystem=True` | Landlock default-deny filesystem confinement. | LPAC token and private ACLs, with OS-granted resources and `registryRead`, are not Landlock path rules. `False` does not disable LPAC. Define the Windows filesystem contract explicitly. |
-| `workspace=None` | Optional live host directory with read/write access; no workspace means no writable directory grant. | LPAC owns a disposable workspace with an explicit internal `read` or `read_write` grant, defaulting to `read_write`. Neither mode is a live host directory. No public adapter selects a mode from this field. |
+| `filesystem=True` | Landlock default-deny filesystem confinement. | LPAC token and private ACLs, with OS-granted resources and `registryRead`, are not Landlock path rules. `False` does not disable LPAC. The separate Windows policy defines its own grants. |
+| `workspace=None` | Optional live host directory with read/write access; no workspace means no writable directory grant. | LPAC owns a disposable workspace with explicit `read` or `read_write` access. Public Windows sessions default to `read`; low-level internal launchers retain `read_write`. Neither mode is a live host directory. No adapter selects a mode from this field. |
 | `allow=()` | Direct file/subtree access under named host paths, read or read/write; explicit paths are required. | Staged inputs are snapshots. Exact-file and directory brokers expose bounded parent-side operations; the directory broker sees live host entries but does not grant direct worker filesystem access. Neither implements `FileRule` semantics. |
 | `system_paths=True` | Automatically allow read access to interpreter, installed packages and Linux system paths. | LPAC stages an explicit dependency closure and retains required OS access. It neither exposes the host installation nor supports disabling all runtime/system access. |
 | `network=False` | Deny worker internet sockets (`AF_INET`/`AF_INET6`); `True` permits them. | Direct socket denial is a candidate for `False`. Fixed-HTTPS broker requests are parent operations and cannot implement `True`. No network capability is added automatically. |
-| `max_memory_mb=0` | Extra address-space headroom in MiB above the worker baseline (`RLIMIT_AS`). Zero disables the cap. | Job limits use absolute committed bytes, include startup and apply to process and job. Multiplying MiB by 1024 squared is not a semantic translation. Use an explicit platform-specific contract before exposing it. |
+| `max_memory_mb=0` | Extra address-space headroom in MiB above the worker baseline (`RLIMIT_AS`). Zero disables the cap. | Windows `memory_limit_bytes` uses absolute committed bytes, includes startup and applies to process and job. Multiplying MiB by 1024 squared is not a semantic translation. |
 | `max_cpu_seconds=0` | `RLIMIT_CPU` process CPU cap; zero disables it. | Job budgets count lifetime user-mode CPU, exclude kernel time and parent tools, and reset on replacement. Equal numeric seconds are not equivalent limits. |
 | `rss_poll_s=0.25` | Documented as an RSS-watchdog interval; the current executor uses it for parent IPC polling, without reading RSS in that loop. | Native committed-memory enforcement is not an RSS watchdog. LPAC inherits a fixed internal polling default but does not map this public field. |
 | `timeout_grace_s=2.0` | Extra grace beyond `CodeActConfig.cell_timeout` before parent termination. | Internal LPAC uses its cell deadline without this public grace. Any future adapter must define and test whether/how the grace applies. |
@@ -91,11 +147,11 @@ Python restrictions also remain a separate language guard, not OS containment.
 
 ## Internal Managed Policy And Lifecycle
 
-`_WindowsSandboxPolicy` is a separate frozen, validated internal policy.
-`_WindowsSandboxSession` provisions and owns the corresponding runtime and
-brokers as an async context manager. The staged public module above reuses these
-types and lifecycle behind a closed launch gate; neither implementation is
-selected by `CodeActConfig(execution_backend="sandbox")`.
+`WindowsSandboxPolicy` aliases the frozen, validated `_WindowsSandboxPolicy`.
+`WindowsSandboxSession` inherits `_WindowsSandboxSession`, which provisions and
+owns the corresponding runtime and brokers as an async context manager.
+This explicit entry is not selected by
+`CodeActConfig(execution_backend="sandbox")`.
 
 | Policy | Enforced managed meaning |
 | --- | --- |
@@ -116,7 +172,16 @@ fields, invalid units/deadlines, aliased snapshot names, invalid endpoint policy
 ungranted tool predicates and collisions with managed broker names are refused.
 Host filesystem checks still happen at native handle admission, not solely at
 policy construction. Staged application modules/installed requirements are
-explicit session arguments, separate from data and broker grants.
+explicit session arguments, separate from data and broker grants. Install
+dependencies in the host environment first (for example, `uv add PyYAML`), then
+pass `application_requirements=("PyYAML>=6",)` to the session. Staging copies
+the installed named requirement closure; it does not resolve, download or
+install packages. URL requirements, editable application installs, install hooks
+and packages requiring unavailable OS capabilities are unsupported.
+`application_modules={"my_app": Path("my_app.py")}` copies explicit regular
+Python files; package parent `__init__.py` files must be listed explicitly.
+Custom wire types must come from staged modules and be supplied with
+`session.strategy(module_globals={...}, data_types=(...))` as needed.
 
 `session.strategy()` creates an internal CodeAct strategy only after successful
 provisioning. It exposes async `self.read_file`, `self.write_file`,
@@ -165,19 +230,20 @@ Filesystem work is drained, not forcibly interrupted by a wall-clock deadline.
 The managed entry does not extend the existing trust boundary to hostile
 same-user host code or arbitrary application import/validator behavior.
 
-### Preflight Contract for Future Public Entry
+<a id="preflight-contract-for-future-public-entry"></a>
+
+### Public Entry Preflight Contract
 
 The integration point is the existing owner, not a new policy translator:
-`_WindowsSandboxSession(policy, config=codeact_config, ...)`. The staged
-`WindowsSandboxSession` inherits this contract and additionally refuses launch.
+`WindowsSandboxSession(policy, config=codeact_config, ...)`.
 Both the policy and generation configuration must be supplied before context
 entry when refusal must precede runtime, broker, profile or recovery enrollment.
-Only the explicit internal Windows policy defines disposable workspace access,
+Only the explicit Windows policy defines disposable workspace access,
 named grants, native resource units, deadlines and recovery.
 
 | Input | Admission rule |
 | --- | --- |
-| Windows policy | Existing validated `_WindowsSandboxPolicy`; no conversion from `SandboxConfig` or direct live-host `FileRule` grants. |
+| Windows policy | Validated `WindowsSandboxPolicy`; no conversion from `SandboxConfig` or direct live-host `FileRule` grants. |
 | Generation options | Valid `CodeActConfig`; default public backend/policy and default CodeAct cell timeout are required as the no-public-policy sentinel. |
 | Copied configuration | Strictly revalidate fields and nested file grants; refuse unknown keys and unvalidated coercions before provisioning. |
 | Strategy overrides | Check again before creating the strategy; generation overrides cannot replace the owner's permissions or deadlines. |
@@ -186,9 +252,9 @@ named grants, native resource units, deadlines and recovery.
 The legacy `session.strategy(config=...)` form remains available after entry,
 but cannot retroactively prevent resources already provisioned. Supply complete
 generation configuration at session construction for creation-time preflight.
-Neither this integration point, the staged interface nor schema validation
-enables public Windows selection, advertises native availability or supplies
-direct host-path grants.
+Schema validation does not prove native availability or supply direct host-path
+grants. The public session still checks the native platform and performs handle
+admission and dependency staging at entry.
 
 ## Internal Workspace Mapping
 
@@ -217,8 +283,9 @@ The acceptance probe bounds only its own retries, not the runtime's stdlib.
 
 This mapping controls the owned workspace, not all OS-granted resources.
 `registryRead`, explicit parent brokers and other native restrictions retain
-their existing meanings. Public `workspace`, `allow`, `system_paths`, context
-rendering and backend selection are unchanged and remain gated.
+their existing meanings. Fork `SandboxConfig.workspace`, `allow`, `system_paths`
+and backend selection remain unchanged. The public Windows session provides
+its own policy context after provisioning.
 
 ## Internal Host Directory Broker
 
@@ -266,13 +333,15 @@ session quotas. Disk I/O is serialized in a thread and drained on cancellation;
 the owner must await pending operations and `aclose()`. There is no claim that
 the cell deadline forcibly interrupts an in-flight filesystem operation.
 
-Public backend selection, context blocks, doctor and `SandboxConfig.allow`
-remain unchanged. Brokering live directory operations is not mounting that
-directory into the worker or implementing arbitrary direct filesystem access.
+The public session owns this broker for `WindowsSandboxPolicy.directories`
+grants and describes its operations in the managed policy context.
+`SandboxConfig.allow` and fork backend selection remain unchanged. Brokering
+live directory operations does not mount that directory into the worker or
+implement arbitrary direct filesystem access.
 
 ## Refusal Before Effects
 
-The public execution path must reject an unsupported start method before
+The fork sandbox execution path must reject an unsupported start method before
 selecting a multiprocessing context or creating the requested workspace.
 Pydantic schema validation rejects `spawn`, `forkserver` and `lpac`, but
 `model_copy(update=...)` skips validation. The executor therefore checks its
@@ -291,7 +360,7 @@ must not disappear through schema serialization. Invalid requests raise
 The internal LPAC constructor applies the same schema check before accepting its
 default-policy sentinel. `require=False` does not bypass configuration validity.
 
-For a real Agent using the public sandbox without fork, rejection must precede
+For a real Agent requesting the fork sandbox without fork, rejection must precede
 prefill, pre-ellipsis cells, parent tool calls and model requests. No source tree,
 profile, job or fallback worker is provisioned for this unavailable backend.
 This does not isolate arbitrary trusted Python performed while constructing the
@@ -306,9 +375,17 @@ distinct from the strategy's own private suppression after accepting the sentine
 These are configuration invariants, not protection against malicious same-user
 host code modifying the framework.
 
-## Acceptance Gates
+<a id="acceptance-gates"></a>
 
-Before exposing a Windows backend:
+## Acceptance Requirements
+
+The explicit public session retains these requirements. The
+[stability and full installed verification record](windows-public-stability-20261002.md)
+records completed v1 acceptance for the current entry on native Windows Python
+3.12.13; earlier staged results below do not establish that acceptance. The
+following requirements guide further backend or policy extensions and their
+applicable platform matrix; they do not imply that new v1 functionality is
+still awaiting implementation:
 
 1. Define disposable-workspace and live-host-grant semantics separately.
    Reject missing or unenforceable required grants without changing unrelated ACLs.
@@ -316,8 +393,9 @@ Before exposing a Windows backend:
    Linux headroom or CPU limits as Windows Job limits.
 3. Map supported deadlines and recovery modes explicitly. Retain refusal for
    every unmapped field, including non-default combinations and reconfiguration.
-4. Derive agent context and capability/doctor reporting from the enforced policy.
-   Merely detecting an AppContainer API is not proof of public policy support.
+4. Derive Agent context from the provisioned policy and label read-only
+   capability/doctor results as prerequisites. Detecting native bindings does
+   not prove launch or containment.
 5. Own staging, executors and profile cleanup through the complete public call
    lifecycle. Keep uncommitted/legacy resources outside automatic adoption.
 6. Exercise paired allowed/denied file and network operations, process ownership,
@@ -326,6 +404,13 @@ Before exposing a Windows backend:
 
 ## Executable Contract
 
+- `test_windows_api.py` covers the public session entry, immutable policy/grant
+  aliases, platform admission and unchanged fork
+  backend selection. Native managed-session and HTTPS cases call the public
+  session without replacing a launch gate.
+- `test_windows_capabilities.py` covers the read-only prerequisite probe,
+  non-Windows behavior and native-binding load failures without claiming
+  containment verification.
 - `test_lpac_policy.py` covers all 14 current public fields, construction with
   and without native budgets, reconfiguration, schema refusal and suppressed
   public context. A schema-field coverage assertion requires this contract to
@@ -359,6 +444,12 @@ The second command is targeted acceptance plus mandatory installed-wheel
 provenance, not the entire default acceptance suite.
 
 ## Verification: Policy Refusal
+
+The verification sections from here onward are historical stage records.
+Their counts, limitations and statements about closed public launch reflect
+the source at the recorded time. In particular, the 2026-10-01 staged public
+tests used a launch-gate fixture; those results must not be treated as current
+public-entry acceptance. The current contract and verification link are above.
 
 Verified on 2026-09-30:
 

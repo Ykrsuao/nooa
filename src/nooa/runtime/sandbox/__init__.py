@@ -9,9 +9,9 @@ Public surface:
   process backend that runs cells in a locked-down worker.
 * guard errors (:class:`CellTimeoutError`, :class:`CellMemoryError`, ...).
 
-The separate ``nooa.runtime.sandbox.windows`` module declares the staged Windows
-policy/session interface. Its launch gate remains closed; it is not selected
-by the public CodeAct sandbox backend.
+The separate ``nooa.runtime.sandbox.windows`` module provides an explicit native
+Windows policy/session interface. Enter ``WindowsSandboxSession`` and pass its
+strategy to Agent generation methods; CodeAct's fork-based backend is separate.
 """
 
 from __future__ import annotations

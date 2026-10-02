@@ -1,28 +1,70 @@
 # Native Windows Sandbox Status
 
-Windows resource control, an internal spawn/IPC runner, an LPAC standard-library
-launcher, an internal persistent LPAC framework worker and an explicitly granted
-internal Agent/CodeAct strategy are implemented. Explicit installed application
-dependencies and parent-side tool argument policies are also supported internally. The
-internal broker layer provides exact-file handles and fixed-endpoint HTTPS access. The
-directory broker adds bounded live listing/read/replace operations without host ACL edits. The
-internal worker and Agent strategy accept native Windows job memory/CPU budgets. The
-LPAC launchers assign their job atomically during native process creation. The
-internal runtime supports opt-in recovery of committed orphaned trees and profiles. The
-private workspace has explicit internal read-only or read/write ACL modes. The
-public sandbox executor is **not available on Windows yet**: `SandboxConfig.start_method` remains
-`fork`, and both `require=True` and `require=False` fail when fork is unavailable.
-No configuration silently switches a sandbox request to in-process execution.
+The native Windows sandbox v1 implementation and its documented acceptance are
+complete as of 2026-10-02. The supported entry is `WindowsSandboxSession`.
+See the [v1 delivery record](windows-v1-delivery-20261002.md) for delivery scope
+and the [follow-up scope](#v1-acceptance-and-follow-up-scope) for operational
+limits and optional extensions.
 
-The separate `nooa.runtime.sandbox.windows` namespace now declares
-`WindowsSandboxPolicy`, `WindowsSandboxSession` and native grant types.
-Policy construction is available, but entering the public session always fails
-before provisioning. There is no caller enable flag or environment bypass.
-See the [staged interface contract](windows-sandbox-policy.md#staged-public-windows-interface).
+`nooa.runtime.sandbox.windows.WindowsSandboxSession` is the explicit public
+entry for native Windows Agent calls. It directly inherits the managed LPAC
+lifecycle: enter the async context, obtain `session.strategy()`, attach it to
+the Agent method, await the call, and leave the context to clean up. The
+unconditional launch refusal has been removed. See the
+[public interface and example](windows-sandbox-policy.md#public-windows-interface).
+
+`WindowsSandboxPolicy` defaults to a read-only disposable workspace and supplies
+explicit native memory/CPU units, deadlines, recovery and named file, directory,
+fixed-HTTPS and Agent-tool grants. Dependencies are staged explicitly from
+installed named requirements and exported source files. The session owns the
+runtime, brokers and workers, accepts sequential calls on one event loop and
+retains failed cleanup resources for an explicit `aclose()` retry. Provisioning
+and cleanup drain filesystem work before propagating cancellation; slow storage
+can delay completion. See the [lifecycle contract](windows-sandbox-policy.md#internal-managed-policy-and-lifecycle).
+
+This does not add an `execution_backend="windows"` selector or translate Linux
+policy. The existing `SandboxedExecutor` and `SandboxConfig.start_method` remain
+fork-only: `CodeActConfig(execution_backend="sandbox")` fails on native Windows
+with either `require` value. No sandbox request falls back to host execution.
+
+`probe_windows_sandbox()` reports read-only native binding prerequisites via
+`WindowsSandboxCapabilities`: `native_windows`, `native_api_available`, `detail`
+and `containment_verified=False`. It starts no session. Doctor keeps the fork
+`sandbox` warning separate from the `windows_sandbox` prerequisite result;
+`--smoke` checks only shell behavior. API availability is not proof of containment.
 
 The [2026-10-01 upstream integration record](upstream-integration-20261001.md)
 documents the selected upstream revision, overlap decisions, recovery snapshot
 and verification of the combined source.
+
+For current public-entry evidence, see
+[2026-10-02 stability and full installed acceptance](windows-public-stability-20261002.md).
+All 615 installed tests passed in 1870.13 seconds, with no failures, errors,
+skips or deselections, including all seven real public-entry/managed-HTTPS cases.
+The separate public-entry stability suite passed six native scenarios under
+idle and bounded same-volume I/O conditions; both loaded paths passed again
+after a test-audit cleanup fix. The
+[initial public-entry selection](windows-public-entry-20261002.md) passed 262
+tests before this complete run.
+The earlier [complete installed acceptance](windows-native-full-20261002.md)
+and subsequent [cleanup follow-up](windows-cleanup-20261002.md) predate this
+entry change. The cleanup follow-up replaces
+serial staging-tree deletion with bounded, joined deletion and records its
+performance and targeted regression evidence. The earlier complete pass
+predates this optimization and used the staged interface.
+At that earlier revision, configured repository typing was clean, combined
+source and installed workflows had been rechecked, and a complete rebuilt-wheel
+run passed all 586 cases on Python 3.12.13. The record preserves an initial
+cleanup timeout and successful targeted diagnostics before that full retry.
+Historical typing counts below are
+superseded. These earlier results do not substitute for current public-entry
+acceptance, and storage variability remains an operational limitation.
+
+The implementation milestones and verification records below preserve the
+scope of their original stages. Statements that public launch, context or
+diagnostics were unavailable describe those historical stages; the current
+entry and diagnostics contract is stated above. In particular, old staged
+tests substituted a launch gate and do not establish public-entry acceptance.
 
 ## Implemented: Resource Control
 
@@ -932,29 +974,32 @@ The [verification record](windows-sandbox-policy.md#verification-host-directory-
 details the leaf-junction admission fix and the observed host-hardlink limitation.
 Python 3.12 clean-wheel installation and Linux containment were not rerun.
 
-## Implemented: Internal Managed Windows Session
+<a id="implemented-internal-managed-windows-session"></a>
 
-`_WindowsSandboxPolicy` and `_WindowsSandboxSession` assemble the existing LPAC
+## Implemented: Managed Windows Session
+
+`WindowsSandboxPolicy` and `WindowsSandboxSession` assemble the existing LPAC
 runtime, dependency staging, named brokers and Agent strategy behind one owned
-lifecycle. The implementation remains internal; the staged public declarations
-reuse it behind a closed launch gate and do not enable public Windows selection.
+lifecycle. The public session directly inherits the managed implementation.
 
 ```python
 from pathlib import Path
 from nooa import Agent, strategy
-from nooa.runtime.sandbox._lpac_directories import _DirectoryGrant
-from nooa.runtime.sandbox._windows_policy import _WindowsSandboxPolicy
-from nooa.runtime.sandbox._windows_session import _WindowsSandboxSession
+from nooa.runtime.sandbox.windows import (
+    DirectoryGrant,
+    WindowsSandboxPolicy,
+    WindowsSandboxSession,
+)
 
-policy = _WindowsSandboxPolicy(
+policy = WindowsSandboxPolicy(
     workspace_access="read",
-    directories={"docs": _DirectoryGrant(Path(r"C:\project\docs"))},
+    directories={"docs": DirectoryGrant(Path(r"C:\project\docs"))},
     memory_limit_bytes=1024**3,
     broker_timeout_s=15,
 )
 
 async def run(llm):
-    async with _WindowsSandboxSession(policy) as session:
+    async with WindowsSandboxSession(policy) as session:
         backend = session.strategy()
 
         class Reader(Agent, llm=llm):
@@ -966,7 +1011,7 @@ async def run(llm):
         return await Reader().summarize("guide.txt")
 ```
 
-This private policy uses explicit Windows units and defaults to a read-only
+This policy uses explicit Windows units and defaults to a read-only
 disposable workspace. It never treats Linux headroom as committed-memory limits,
 broker operations as direct path grants, or HTTPS fetches as unrestricted
 networking. Worker budgets reset on replacement and new calls.
@@ -982,8 +1027,9 @@ Managed strategies now provide a static Windows policy context after provisionin
 It describes actual workspace and named broker grants, native resource units,
 deadlines, recovery and async limitations without advertising Linux permissions
 or exposing host paths, snapshot contents or endpoint URLs. Raw caller-owned LPAC
-strategies still suppress policy context. This internal block does not enable
-public backend selection or capability/doctor reporting.
+strategies still suppress policy context. The public session's block describes
+its provisioned policy; the separate capability/doctor check describes native
+binding prerequisites and never claims containment was verified.
 
 ### Verification: Managed Lifecycle
 
@@ -1093,12 +1139,15 @@ The [contention verification record](windows-sandbox-policy.md#verification-boun
 contains individual measurements, resource-check scope and artifact paths.
 Only tests and documentation changed. Public Windows selection remains disabled.
 
-## Implemented: Staged Public Interface
+<a id="implemented-staged-public-interface"></a>
 
-`nooa.runtime.sandbox.windows` exposes native policy/grant aliases and a session
-wrapper over the existing managed owner. Configuration can be constructed and
-validated; session entry always raises `SandboxUnavailable` before creating
-native resources. There is no caller release switch or Linux-policy translation.
+## Historical Milestone: Staged Public Interface (2026-10-01)
+
+At this stage, `nooa.runtime.sandbox.windows` exposed native policy/grant aliases
+and a session wrapper over the existing managed owner. Configuration could be
+constructed and validated, but session entry always raised `SandboxUnavailable`
+before creating native resources. The 2026-10-02 public entry supersedes this
+launch restriction; the following results retain their historical scope.
 
 The API, managed-session, policy and platform source suites passed all 188
 checks on Windows Python 3.12.13 and all 188 on 3.13.12. Linux passed 184 and
@@ -1116,57 +1165,77 @@ complete installed-workflow gate.
 See the [staged interface verification record](windows-sandbox-policy.md#verification-staged-public-windows-interface)
 for scope, timings, installed-package checks and remaining release gates.
 
-## Remaining: Public Rollout
+<a id="remaining-public-rollout"></a>
+<a id="remaining-coverage-and-operational-limits"></a>
+
+## V1 Acceptance And Follow-Up Scope
 
 The [Windows policy contract](windows-sandbox-policy.md) records all current
 `SandboxConfig` field meanings, non-equivalent native mechanisms, refusal tests
-and the separate internal Windows policy. It is not an enabled public backend
-or a Linux-policy translator.
+and the separate public Windows policy. V1 is accepted through the explicit
+`WindowsSandboxSession` entry. Backend selection, automatic orphan cleanup and
+broader stress coverage are follow-up work, not unfinished v1 acceptance.
 
-- The 2026-10-01 native Python 3.12 default suite passed 9509 tests with no
-  failures, using an independent Windows bytecode cache. Complete installed-wheel
-  acceptance subsequently passed all 586 checks on both Windows Python 3.12.13
-  and 3.13.12, with zero failures, errors or skips; see the
-  [installed-wheel record](windows-sandbox-policy.md#verification-complete-installed-wheel-acceptance).
-  These native tests retain test-only launch-gate substitution, not enabled
-  public launch. Resolve the remaining repository and public-path release
-  checks before rollout. See the
-  [full-project record](windows-sandbox-policy.md#verification-full-project-regression-follow-up).
-  The evaluation worker follow-up passed the full pipeline on both 3.12 and
-  3.13 (309 tests each) and resolved all 14 scoped worker typing diagnostics.
-  The latest coding-export follow-up clears ACP source/test typing, but the
-  whole-project Windows-target report still has 198 errors and two warnings.
-  See the [coding export record](windows-sandbox-policy.md#verification-typed-coding-exports-and-acp)
-  for scoped regressions and the separate Linux-target baseline, and the
+- Current configured repository typing is clear: 320 files, zero errors and
+  warnings; see the [stability record](windows-public-stability-20261002.md).
+  The earlier [post-typing source acceptance](typing-acceptance-20261002.md)
+  records 9176 default-source and 514 embedded/memory passes, with its skips,
+  deselections and three ACP xfails retained. The
+  [typing completion record](typing-final-20261002.md) supersedes the older
+  198-error Windows-target count; it is not a new Linux-target result.
+- Current [public-entry stability and installed acceptance](windows-public-stability-20261002.md)
+  passed all 615 installed tests on Python 3.12.13, including seven real
+  public-entry/managed-HTTPS cases. The source evidence comprises six native
+  stability cases, two loaded-path repeats after the audit cleanup fix and six
+  fast checks. Tracked workers and owned resources were released. This replaces
+  the earlier 262-case selection as the current complete installed evidence.
+- The [earlier complete installed run](windows-native-full-20261002.md) passed
+  all 574 configured native cases and 12 offline workflows on Python 3.12.13.
+  Its first attempt timed out during runtime deletion; diagnostic selections
+  and a full retry subsequently passed with unchanged deadlines. These results
+  retain their historical scope and do not resolve all storage variability.
+- The [2026-10-01 installed-wheel record](windows-sandbox-policy.md#verification-complete-installed-wheel-acceptance)
+  passed all 586 checks on Windows Python 3.12.13 and 3.13.12 before the latest
+  typing changes. The evaluation pipeline separately passed 309 tests on each
+  version; see the
   [worker verification record](windows-sandbox-policy.md#verification-evaluation-worker-typing-and-error-cleanup).
+  These historical results do not establish current public Windows acceptance.
+
+The current release has explicit operational limits: staging and cleanup can
+be slow on loaded storage; filesystem work drains before cancellation returns;
+host callbacks retain their granted authority; and dependency compatibility is
+limited to the supported staging and runtime capabilities. The current public
+entry was accepted on native Windows Python 3.12.13. Historical Python 3.13 and
+Linux results do not establish a new public-entry matrix for those environments.
+
+Further development may:
+
+- Add a CodeAct backend selector with its own Windows policy and lifecycle
+  contract. `execution_backend="sandbox"` still requires `fork` and refuses
+  native Windows; explicit native grants and Linux-policy refusal still apply.
 - Broaden storage-contention coverage beyond the accepted two-thread bounded
-  load. Per-file cleanup remains costly; disk-full, sustained saturation, other
-  storage devices and operational disk budgets need separate validation.
-- Cover broader application dependency and Agent workflows beyond explicitly
+  load to disk-full behavior, sustained saturation, other storage devices and
+  operational disk budgets.
+- Cover broader application dependencies and Agent workflows beyond explicitly
   installed distributions, exported source modules, data types and methods.
-- Complete release acceptance before enabling the staged
-  [public Windows interface](windows-sandbox-policy.md#staged-public-windows-interface).
-  Its aliases and managed-session wrapper preserve explicit native grants,
-  platform-specific units and fail-closed rules; they do not translate Linux
-  settings. Generation configuration is validated before provisioning, including
-  unknown and invalid copied fields. The launch gate remains closed and no
-  CodeAct backend, capability probe or doctor support is registered.
 - Extend the directory broker beyond bounded listing/read/existing-file replacement
   only with separately enforceable operations, richer HTTP policy and session-wide
   budgets. Direct socket denial does not restrict other privileged callbacks' effects.
-- Implement explicit live host read/read-write grants and reject missing or
-  unenforceable required rules. Direct worker inputs remain snapshots; live
-  directory operations through the parent broker do not grant direct worker access.
+- Add direct worker access to live host paths only with explicit read/read-write
+  grants and rejection of missing or unenforceable required rules. Current worker
+  inputs remain snapshots; live directory operations through the parent broker
+  do not grant direct worker access.
 - Validate any further async I/O requirements without enabling network access
   just to make event-loop startup work.
-- Integrate the opt-in recovery lifecycle into a future public backend, including
-  operational policy for uncommitted registrations, disk usage and scheduling.
+- Add automatic orphan-resource cleanup around the public session's opt-in
+  recovery enrollment only with explicit operational policy for uncommitted
+  registrations, disk usage and scheduling. Worker replacement after a timeout
+  already exists; it is distinct from recovery after a host-process crash.
   Do not infer ownership of legacy or incompletely registered resources.
-- Complete release-level public-path acceptance before exposing capability probes,
-  `SandboxedExecutor`, public agent-facing context or doctor support. Targeted
-  native tests use the staged session with a test-only gate substitution; they
-  do not show that installed public launch is enabled. The managed context must
-  remain tied to its provisioned Windows policy.
+- Keep the public Agent context tied to the provisioned Windows policy and
+  prerequisite reporting separate from containment evidence. The read-only
+  probe and doctor do not launch workers or certify permissions. Any future
+  extension of `SandboxedExecutor` requires separate policy and lifecycle work.
 
 Public configuration remains fail-closed. Documentation and diagnostics must
 describe enforced restrictions, not requested-but-missing ones. Linux guard

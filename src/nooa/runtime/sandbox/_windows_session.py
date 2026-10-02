@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Internal managed Windows lifecycle. Public backend selection remains gated."""
+"""Managed lifecycle shared by the explicit public Windows sandbox session."""
 
 from __future__ import annotations
 

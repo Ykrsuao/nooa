@@ -56,7 +56,17 @@ configuration, or contact model providers. Permission results are estimates
 (especially for Windows ACLs), not proof that an actual write will succeed.
 The port probe briefly binds a local socket without starting a server.
 
-`--smoke` opts into a real shell check in a disposable directory containing
+Sandbox checks are separate. `sandbox` describes the existing fork executor,
+which remains a warning on native Windows. `windows_sandbox` checks prerequisites
+for the explicit `WindowsSandboxSession`: `ok` means the AppContainer and Job
+Object API bindings loaded; a load failure is a warning. The read-only
+`probe_windows_sandbox()` API returns `WindowsSandboxCapabilities` with
+`native_windows`, `native_api_available`, `detail`, and
+`containment_verified=False`. Loading bindings creates no profile, job, worker
+or sandbox files and cannot establish that session provisioning or containment
+will succeed. See the [Windows interface contract](../../docs/windows-sandbox-policy.md#public-windows-interface).
+
+`--smoke` opts into a real shell check only, in a disposable directory containing
 Chinese characters and spaces. It verifies UTF-8 file/command output, cancellation
 of a running command, recovery in the same shell-tool instance, and process
 cleanup. Temporary files are removed on normal completion or handled failure.
@@ -65,8 +75,9 @@ The worker does not inherit API keys or shell startup hooks. Explicit
 
 The exit status is **0** when no blocking errors were found, **1** for diagnostic
 errors (including smoke failures), and **2** for invalid command options.
-Missing optional viewer packages, Git/ripgrep, occupied ports, and the unavailable
-Windows sandbox are warnings, not blocking errors. Every warning/error includes
+Missing optional viewer packages, Git/ripgrep, occupied ports, the unavailable
+fork backend and missing Windows sandbox prerequisites are warnings, not blocking
+errors. Every warning/error includes
 repair advice where applicable. A successful doctor report is not a security
 or sandbox certification.
 
