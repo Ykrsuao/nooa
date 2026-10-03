@@ -174,7 +174,12 @@ class _Assets(HTMLParser):
             self.urls.append(url)
 
 
-def test_viewer_start_assets_and_stop(workspace, child_env, unused_tcp_port):
+@pytest.mark.parametrize("stdout_encoding", [None, "cp1252:surrogateescape"])
+def test_viewer_start_assets_and_stop(workspace, child_env, unused_tcp_port, stdout_encoding):
+    if stdout_encoding is not None:
+        # Reproduce Windows CI's redirected stream even on UTF-8 or GBK hosts.
+        # This affects this CLI process only, not the test runner or its locale.
+        child_env = {**child_env, "PYTHONIOENCODING": stdout_encoding}
     db = workspace / "\u8f68\u8ff9 data.db"
     log = workspace / "viewer.log"
     stop_file = workspace / "stop-viewer"

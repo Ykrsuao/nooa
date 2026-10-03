@@ -25,6 +25,31 @@ if TYPE_CHECKING:
     from nooa.runtime.sandbox._win_appcontainer import SuspendedProcess
 
 
+_COMMAND_BOOTSTRAP = """
+import ctypes, subprocess, sys
+
+kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+for name in ('SetConsoleCP', 'SetConsoleOutputCP'):
+    operation = getattr(kernel, name)
+    operation.argtypes = [ctypes.c_uint]
+    operation.restype = ctypes.c_int
+    if not operation(65001):
+        error = ctypes.WinError(ctypes.get_last_error())
+        print(f'Windows command console setup failed ({name}): {error}', file=sys.stderr)
+        sys.exit(1)
+
+try:
+    result = subprocess.run(
+        sys.argv[2], executable=sys.argv[1],
+        stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr, close_fds=True,
+    )
+except OSError as error:
+    print(f'Windows command shell launch failed: {error}', file=sys.stderr)
+    sys.exit(1)
+sys.exit(result.returncode)
+"""
+
+
 async def _await_owned(task: asyncio.Task, stop: threading.Event | None = None):
     """Cancellation requests stop work, then wait until owned resources retire."""
     cancelled = False
@@ -108,7 +133,7 @@ class WindowsCommandSession:
     Callers copy validated input into a fresh child of ``workspace`` and inspect
     changes after run() returns. This class never grants access to live host
     project directories. Each command gets a new LPAC process tree and Job.
-    Two process slots are required for the UTF-8 console setup shell and the
+    Two process slots are required for the UTF-8 console setup process and the
     command shell; external programs require additional slots.
     The wall-clock command timeout includes shell and program startup.
     """
@@ -129,7 +154,7 @@ class WindowsCommandSession:
             if type(value) is not int or value <= 0:
                 raise ValueError(f"{name} must be a positive integer")
         if active_process_limit < 2:
-            raise ValueError("active_process_limit must allow at least two command shells")
+            raise ValueError("active_process_limit must allow at least two command processes")
         self._limits = {
             "memory_limit_bytes": memory_limit_bytes,
             "cpu_time_limit_s": cpu_time_limit_s,
@@ -170,6 +195,12 @@ class WindowsCommandSession:
         source = Path(sys.base_prefix).resolve() / "python.exe"
         _check_source(source)
         shutil.copyfile(source, runtime.runtime / "python.exe")
+        # System binaries can have different LPAC execute ACLs across Windows
+        # installations. Copy only this trusted shell into the existing private
+        # read-only runtime; never grant access to host system directories.
+        source = Path(_environment(runtime.workspace)["SystemRoot"]) / "System32" / "cmd.exe"
+        _check_source(source)
+        shutil.copyfile(source, runtime.runtime / "cmd.exe")
 
     async def __aenter__(self):
         if self._state != "new":
@@ -239,17 +270,25 @@ class WindowsCommandSession:
             PYTHONIOENCODING="utf-8",
             PYTHONUTF8="1",
         )
-        argv = [str(system32 / "cmd.exe"), "/d", "/s", "/c"]
+        shell = str(runtime.runtime / "cmd.exe")
         # cmd parses its /c tail using different quoting from CommandLineToArgvW.
-        # It also caches the output code page at startup. Set UTF-8 on a private
-        # hidden console, then start a fresh shell so builtins and external tools
-        # share that encoding, including characters absent from the machine OEM.
-        shell = subprocess.list2cmdline(argv)
-        # Quote the child executable explicitly even when SystemRoot has no
-        # spaces. Resolve that shell directly, never through the writable cwd.
-        inner_shell = '"' + argv[0] + '" /d /s /c'
-        codepage = '"' + str(system32 / "chcp.com") + '" 65001 >nul || exit /b 1'
-        command_line = shell + ' "' + codepage + " & " + inner_shell + ' "' + command + '""'
+        shell_line = '"' + shell + '" /d /s /c "' + command + '"'
+        # Set the private console's code page before cmd starts and caches it.
+        # The fixed bootstrap uses Win32 directly: no chcp executable, NUL
+        # redirection or second cmd parse is needed to initialize the console.
+        argv = [
+            str(runtime.runtime / "python.exe"),
+            "-I",
+            "-X",
+            "utf8",
+            "-S",
+            "-B",
+            "-c",
+            _COMMAND_BOOTSTRAP,
+            shell,
+            shell_line,
+        ]
+        command_line = subprocess.list2cmdline(argv)
         if len(command_line) >= 32767:
             raise ValueError("command exceeds the Windows command line limit")
         execution = _CommandExecution()

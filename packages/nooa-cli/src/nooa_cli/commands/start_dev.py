@@ -123,7 +123,10 @@ def command(port: int, host: str, db_path_opt: str | None):
     click.echo()
     click.secho("  NVIDIA OO Agents Viewer", fg="cyan", bold=True)
     click.echo(f"  URL:  http://localhost:{port}")
-    click.echo(text_for_stream(f"  DB:   {db_path}", click.get_text_stream("stdout")))
+    # Format for the exact stream we write to. Click's default strict wrapper
+    # can have a different encoding from echo's cached redirected stdout.
+    output = click.get_text_stream("stdout", errors=None)
+    click.echo(text_for_stream(f"  DB:   {db_path}", output), file=output)
 
     # When a token is configured the viewer is reachable from other machines.
     # Print the one-time bootstrap link: opening it trades the token for a

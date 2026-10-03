@@ -133,6 +133,15 @@ jobs:
         run: uv sync --all-extras --no-extra sandbox
       - name: Install ripgrep
         run: choco install ripgrep --yes --no-progress
+      # Exercise the command bootstrap on both supported Windows runtimes before
+      # the long suites. A setup failure otherwise surfaces after ~35 minutes,
+      # and 3.13's lifecycle selection does not include these command tests.
+      - name: Native command and redirected viewer regressions
+        run: >-
+          uv run pytest -q
+          tests/runtime/sandbox/test_windows_command.py
+          tests/test_console_diagnostics.py
+          tests/acceptance/test_installed_workflows.py::test_viewer_start_assets_and_stop
       # Native Windows Python launched from PowerShell; shell tools locate
       # Git for Windows themselves. No fork or Unix signals: tests that need
       # those skip with a reason; everything else must pass without

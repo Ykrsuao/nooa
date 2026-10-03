@@ -6,8 +6,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -119,8 +122,33 @@ async def test_shell_lookup_ignores_snapshot_executables(session):
     assert result["stdout"].strip() == "trusted shell 中文 🚀"
 
 
+@pytest.mark.parametrize("name", ["chcp.com", "cmd.exe"])
+async def test_bootstrap_does_not_require_system_executable_access(
+    session, tmp_path, monkeypatch, name
+):
+    import ctypes
+
+    from nooa.runtime.sandbox import _win_appcontainer as native
+
+    system_program = Path(os.environ["SystemRoot"]) / "System32" / name
+    denied_program = tmp_path / ("host-only-" + name)
+    shutil.copyfile(system_program, denied_program)
+    create = native._CreateProcess
+
+    def deny_system_program(*args):
+        # Model a runner where the LPAC token cannot execute a system helper. Only
+        # replace that dependency; the host file retains its ordinary ACL.
+        command = args[1].value.replace(str(system_program), str(denied_program))
+        return create(args[0], ctypes.create_unicode_buffer(command), *args[2:])
+
+    monkeypatch.setattr(native, "_CreateProcess", deny_system_program)
+    result = await session.run("echo independent 中文 🚀", session.workspace)
+    assert result["returncode"] == 0, result
+    assert result["stdout"].strip() == "independent 中文 🚀"
+
+
 async def test_two_process_limit_supports_builtins_without_expanding_job_limit():
-    with pytest.raises(ValueError, match="two command shells"):
+    with pytest.raises(ValueError, match="two command processes"):
         WindowsCommandSession(active_process_limit=1)
     async with WindowsCommandSession(active_process_limit=2) as session:
         result = await session.run("echo bounded 中文 🚀", session.workspace)
@@ -191,15 +219,50 @@ async def test_exited_shell_does_not_leave_background_descendants_or_block_outpu
     assert not _image_name(int(result["stdout"].strip()))
 
 
-async def test_timeout_and_output_limit_leave_session_reusable(session):
-    result = await session.run(
-        # Timeout includes interpreter startup. Emit the marker from the shell
-        # so output retention does not depend on Python starting within 0.5 s.
-        'echo started & python -I -S -c "import time; time.sleep(60)"',
+async def test_timeout_and_output_limit_leave_session_reusable(session, monkeypatch):
+    early = await session.run(
+        'python -I -S -c "import time; time.sleep(60)"',
         session.workspace,
-        timeout_s=0.5,
+        timeout_s=0.001,
     )
-    assert result["timed_out"] is True and result["returncode"] != 0
+    # A real deadline can expire during bootstrap, before any user output.
+    assert early["timed_out"] is True and early["returncode"] != 0, early
+    run = session._run
+    stops = []
+
+    def record_stop(*args):
+        stops.append(args[-1])
+        return run(*args)
+
+    monkeypatch.setattr(session, "_run", record_stop)
+    source = (
+        "import time\n"
+        "from pathlib import Path\n"
+        "print('started', flush=True)\n"
+        "Path('output-ready').write_text('ready', encoding='ascii')\n"
+        "time.sleep(60)\n"
+    )
+    (session.workspace / "output.py").write_text(source, encoding="utf-8")
+    task = asyncio.create_task(session.run("python -I -S output.py", session.workspace))
+
+    async def wait_ready():
+        while not (session.workspace / "output-ready").exists():
+            if task.done():
+                pytest.fail(f"command exited before producing output: {task.result()}")
+            await asyncio.sleep(0.01)
+
+    try:
+        await asyncio.wait_for(wait_ready(), 10)
+        # Output is known to be in the pipe before requesting native termination;
+        # no assumption about bootstrap duration or interpreter startup is needed.
+        stops[0].set()
+        result = await asyncio.wait_for(task, 10)
+    finally:
+        for stop in stops:
+            stop.set()
+        if not task.done():
+            await asyncio.wait_for(task, 10)
+    assert result["returncode"] != 0, result
     assert "started" in result["stdout"]
     limited = await session.run(
         "python -I -S -c \"print('x' * 100000)\"", session.workspace, max_output_bytes=1024

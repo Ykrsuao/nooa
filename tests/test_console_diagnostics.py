@@ -10,7 +10,8 @@ import pytest
 
 
 @pytest.mark.parametrize("encoding", ["utf-8", "cp1252"])
-def test_viewer_starts_with_unicode_db_on_narrow_output(monkeypatch, tmp_path, encoding):
+@pytest.mark.parametrize("errors", ["strict", "surrogateescape"])
+def test_viewer_starts_with_unicode_db_on_narrow_output(monkeypatch, tmp_path, encoding, errors):
     import uvicorn
     from nooa_cli.commands.start_dev import command
 
@@ -20,7 +21,7 @@ def test_viewer_starts_with_unicode_db_on_narrow_output(monkeypatch, tmp_path, e
     monkeypatch.setenv("NOOA_VIEWER_AUTH_TOKEN", "")
     monkeypatch.setenv("NOOA_TRACE_DB", "")
     monkeypatch.setenv("NEMO_OO_TRACE_DB", "")
-    with io.TextIOWrapper(io.BytesIO(), encoding=encoding) as stream:
+    with io.TextIOWrapper(io.BytesIO(), encoding=encoding, errors=errors) as stream:
         with monkeypatch.context() as output_patch:
             output_patch.setattr(sys, "stdout", stream)
             assert command.callback is not None
