@@ -317,8 +317,9 @@ def apply_landlock(rules: list[LandlockRule]) -> None:
 def _build_no_inet_filter() -> bytes:
     """BPF program: deny ``socket(AF_INET/AF_INET6)`` with EACCES, allow the rest.
 
-    ``AF_UNIX`` (and every other syscall) is untouched, so the parent broker pipe
-    and local IPC keep working while all internet sockets are refused at creation.
+    Native ``AF_UNIX`` and other native syscalls are untouched, so the parent
+    broker pipe and local IPC keep working. Foreign ABIs and x32 syscall numbers
+    fail closed: their socket numbers cannot be checked with the native table.
     """
     BPF_LD = 0x00
     BPF_JMP = 0x05
@@ -326,6 +327,7 @@ def _build_no_inet_filter() -> bytes:
     BPF_W = 0x00
     BPF_ABS = 0x20
     BPF_JEQ = 0x10
+    BPF_JSET = 0x40
     BPF_K = 0x00
     RET_ALLOW = 0x7FFF0000
     RET_ERRNO = 0x00050000
@@ -335,12 +337,22 @@ def _build_no_inet_filter() -> bytes:
         return struct.pack("HBBI", code, jt, jf, k)
 
     # seccomp_data offsets: nr@0, arch@4, args[0]@16 (little-endian low word).
-    return b"".join(
+    instructions = [
+        ins(BPF_LD | BPF_W | BPF_ABS, 0, 0, 4),  # A = arch
+        ins(BPF_JMP | BPF_JEQ | BPF_K, 1, 0, _AUDIT_ARCH),  # native? -> continue
+        ins(BPF_RET | BPF_K, 0, 0, RET_ERRNO | EACCES),  # unsupported ABI -> deny
+        ins(BPF_LD | BPF_W | BPF_ABS, 0, 0, 0),  # A = nr
+    ]
+    if _AUDIT_ARCH == 0xC000003E:
+        # x32 shares AUDIT_ARCH_X86_64, but marks syscall numbers with bit 30.
+        instructions.extend(
+            [
+                ins(BPF_JMP | BPF_JSET | BPF_K, 0, 1, 0x40000000),
+                ins(BPF_RET | BPF_K, 0, 0, RET_ERRNO | EACCES),
+            ]
+        )
+    instructions.extend(
         [
-            ins(BPF_LD | BPF_W | BPF_ABS, 0, 0, 4),  # A = arch
-            ins(BPF_JMP | BPF_JEQ | BPF_K, 1, 0, _AUDIT_ARCH),  # native? -> continue
-            ins(BPF_RET | BPF_K, 0, 0, RET_ALLOW),  # foreign arch -> allow
-            ins(BPF_LD | BPF_W | BPF_ABS, 0, 0, 0),  # A = nr
             ins(BPF_JMP | BPF_JEQ | BPF_K, 0, 4, _NR_SOCKET),  # nr!=socket -> allow(+4)
             ins(BPF_LD | BPF_W | BPF_ABS, 0, 0, 16),  # A = args[0] (domain)
             ins(BPF_JMP | BPF_JEQ | BPF_K, 1, 0, socket.AF_INET),  # INET -> errno
@@ -349,6 +361,7 @@ def _build_no_inet_filter() -> bytes:
             ins(BPF_RET | BPF_K, 0, 0, RET_ALLOW),
         ]
     )
+    return b"".join(instructions)
 
 
 def _seccomp_install(prog: bytes) -> None:

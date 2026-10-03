@@ -395,6 +395,31 @@ async def test_edits_keep_the_file_line_endings(sh, tmp_path, ending):
     assert path.read_bytes() == "a = 10\nb = 20\nc = 30\n".replace("\n", ending).encode()
 
 
+@pytest.mark.parametrize("ending", ["\n", "\r\n"], ids=["lf-file", "crlf-file"])
+@pytest.mark.parametrize("replacement_ending", ["\n", "\r\n", "\r"])
+@pytest.mark.parametrize("use_match", [False, True], ids=["path", "match"])
+async def test_replace_normalizes_input_line_endings(
+    sh, tmp_path, ending, replacement_ending, use_match
+):
+    path = tmp_path / "f.py"
+    path.write_bytes("a = 1\nb = 2\n".replace("\n", ending).encode())
+    replacement = f"a = 10{replacement_ending}a = 11{replacement_ending}"
+    if use_match:
+        match = await sh.read("f.py", (1, 1))
+        await sh.replace(match, replacement)
+    else:
+        await sh.replace("f.py", "a = 1\n", replacement)
+    assert path.read_bytes() == "a = 10\na = 11\nb = 2\n".replace("\n", ending).encode()
+
+
+@pytest.mark.parametrize("ending", ["\n", "\r\n"])
+async def test_replace_accepts_crlf_search_text(sh, tmp_path, ending):
+    path = tmp_path / "f.py"
+    path.write_bytes("a = 1\nb = 2\n".replace("\n", ending).encode())
+    await sh.replace("f.py", "a = 1\r\nb = 2", "a = 10\r\nb = 20")
+    assert path.read_bytes() == "a = 10\nb = 20\n".replace("\n", ending).encode()
+
+
 @pytest.mark.asyncio
 async def test_write_file_writes_content_verbatim(sh, tmp_path):
     """Text mode would turn each LF into CRLF on Windows."""

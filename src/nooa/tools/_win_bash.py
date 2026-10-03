@@ -23,16 +23,96 @@ import sys
 assert sys.platform == "win32"
 
 import asyncio  # noqa: E402
+import ctypes  # noqa: E402
 import os  # noqa: E402
 import shutil  # noqa: E402
 import tempfile  # noqa: E402
 from collections.abc import Iterator  # noqa: E402
+from ctypes import wintypes  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 from nooa._win_job import ProcessJob as ProcessJob  # noqa: E402
 from nooa._win_job import _image_name as _image_name  # noqa: E402
 
 BASH_ENV_VAR = "NOOA_BASH"
+CREATE_SUSPENDED = 0x00000004
+_TH32CS_SNAPTHREAD = 0x00000004
+_THREAD_SUSPEND_RESUME = 0x0002
+_ERROR_NO_MORE_FILES = 18
+
+
+class _ThreadEntry32(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", wintypes.DWORD),
+        ("cntUsage", wintypes.DWORD),
+        ("th32ThreadID", wintypes.DWORD),
+        ("th32OwnerProcessID", wintypes.DWORD),
+        ("tpBasePri", wintypes.LONG),
+        ("tpDeltaPri", wintypes.LONG),
+        ("dwFlags", wintypes.DWORD),
+    ]
+
+
+_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+
+def _fn(name: str, restype, *argtypes):
+    fn = getattr(_kernel32, name)
+    fn.restype = restype
+    fn.argtypes = argtypes
+    return fn
+
+
+_CreateToolhelp32Snapshot = _fn(
+    "CreateToolhelp32Snapshot", wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD
+)
+_Thread32First = _fn(
+    "Thread32First", wintypes.BOOL, wintypes.HANDLE, ctypes.POINTER(_ThreadEntry32)
+)
+_Thread32Next = _fn("Thread32Next", wintypes.BOOL, wintypes.HANDLE, ctypes.POINTER(_ThreadEntry32))
+_OpenThread = _fn("OpenThread", wintypes.HANDLE, wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+_ResumeThread = _fn("ResumeThread", wintypes.DWORD, wintypes.HANDLE)
+_CloseHandle = _fn("CloseHandle", wintypes.BOOL, wintypes.HANDLE)
+
+
+def resume_suspended_process(pid: int) -> None:
+    """Resume a just-created, job-owned process without running an unowned child.
+
+    asyncio's Popen closes CreateProcess's primary-thread handle. A process
+    created with CREATE_SUSPENDED has not run its entry point, so recover that
+    single thread through the documented Toolhelp API. Unexpected thread state
+    fails the launch; callers must terminate and reap the process on any error.
+    """
+    snapshot = _CreateToolhelp32Snapshot(_TH32CS_SNAPTHREAD, 0)
+    if snapshot == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    threads: list[int] = []
+    try:
+        entry = _ThreadEntry32()
+        entry.dwSize = ctypes.sizeof(entry)
+        found = _Thread32First(snapshot, ctypes.byref(entry))
+        while found:
+            if entry.th32OwnerProcessID == pid:
+                threads.append(entry.th32ThreadID)
+            entry.dwSize = ctypes.sizeof(entry)
+            found = _Thread32Next(snapshot, ctypes.byref(entry))
+        if ctypes.get_last_error() != _ERROR_NO_MORE_FILES:
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        _CloseHandle(snapshot)
+    if len(threads) != 1:
+        raise RuntimeError(f"Expected one suspended Bash thread, found {len(threads)}")
+    thread = _OpenThread(_THREAD_SUSPEND_RESUME, False, threads[0])
+    if not thread:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        previous_count = _ResumeThread(thread)
+        if previous_count == 0xFFFFFFFF:
+            raise ctypes.WinError(ctypes.get_last_error())
+        if previous_count != 1:
+            raise RuntimeError(f"Unexpected Bash thread suspend count: {previous_count}")
+    finally:
+        _CloseHandle(thread)
 
 
 def close_stale_pipe(transport: asyncio.BaseTransport) -> None:

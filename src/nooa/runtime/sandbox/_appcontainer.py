@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Internal LPAC/stdlib acceptance launcher, not the public CodeAct backend.
 
-Runs a private copy of CPython under a low-privilege AppContainer with only the
-system registryRead capability required for DLL initialization, not network capabilities.
+Runs a private copy of CPython under a low-privilege AppContainer with the
+system registryRead capability required for DLL initialization. Network capabilities
+are opt-in; default workers have none. Windows loopback restrictions are unchanged.
 No host agent, site-packages, environment secrets, or broker are exposed. Input
 files are snapshots; the disposable workspace is optionally writable. Framework
 staging and persistent-worker integration live in the separate internal LPAC modules.
@@ -127,8 +128,11 @@ class _AppContainerPython:
         inputs: Mapping[str, bytes] | None = None,
         recovery_directory: Path | None = None,
         workspace_access: Literal["read", "read_write"] = "read_write",
+        network: bool = False,
         _retain: Callable[[_AppContainerPython], None] | None = None,
     ):
+        if type(network) is not bool:
+            raise TypeError("network must be a bool")
         if type(workspace_access) is not str or workspace_access not in ("read", "read_write"):
             raise ValueError("workspace_access must be 'read' or 'read_write'")
         if sys.platform != "win32":
@@ -157,12 +161,20 @@ class _AppContainerPython:
         self.runtime = self.root / "runtime"
         self.workspace = self.root / "workspace"
         self.inputs = self.root / "inputs"
+
+        def retain_profile(profile: Profile) -> None:
+            self._profile = profile
+
         try:
             # A managed owner retains even a partially constructed runtime when
             # constructor rollback itself fails and cleanup needs another attempt.
             if _retain is not None:
                 _retain(self)
-            self._profile = Profile(name=self._lease.profile_name) if self._lease else Profile()
+            self._profile = Profile(
+                name=self._lease.profile_name if self._lease else None,
+                network=network,
+                _retain=retain_profile,
+            )
             if self._lease is not None:
                 self._lease.record_profile(self._profile.name)
             self._profile.grant_owned_directory(self.root, self.root)

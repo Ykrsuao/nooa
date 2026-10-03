@@ -165,27 +165,100 @@ async def test_pool_remove_and_close_release_each_runtime_once():
         await pool.add("third", _RuntimeValue())
 
 
-async def test_remove_unregisters_even_when_teardown_fails():
-    """A failing close must not strand the session id in the pool.
+async def test_remove_retains_failed_resources_and_retries_before_reusing_id():
+    """Native cleanup can fail while resources are still owned by the session."""
 
-    The runtime is torn down regardless; leaving the entry registered makes the
-    id permanently unusable — later loads report "already loaded" and later
-    prompts reach a closed runtime.
-    """
-
-    class _Failing:
+    class _FailOnce(_RuntimeValue):
         async def close(self) -> None:
-            raise RuntimeError("teardown blew up")
+            await super().close()
+            if self.close_calls == 1:
+                raise RuntimeError("teardown blew up")
 
-    pool: SessionRuntimePool[_Failing] = SessionRuntimePool()
-    await pool.add("one", _Failing())
+    pool: SessionRuntimePool[_FailOnce] = SessionRuntimePool()
+    value = _FailOnce()
+    runtime = await pool.add("one", value)
 
     with pytest.raises(RuntimeError, match="teardown blew up"):
         await pool.remove("one")
 
+    assert runtime.is_closed is False
+    with pytest.raises(SessionRuntimeClosedError):
+        async with runtime.turn():
+            pass
+    with pytest.raises(ValueError, match="already registered"):
+        await pool.add("one", _FailOnce())
+
+    assert await pool.remove("one") is value
+    assert value.close_calls == 2
+    assert runtime.is_closed is True
     assert await pool.ids() == ()
-    with pytest.raises(KeyError):
-        await pool.get("one")
+    await pool.add("one", _FailOnce())
+
+
+async def test_pool_close_retries_only_failed_resources():
+    class _FailOnce(_RuntimeValue):
+        async def close(self) -> None:
+            await super().close()
+            if self.close_calls == 1:
+                raise RuntimeError("still owns a worker")
+
+    pool: SessionRuntimePool[_RuntimeValue] = SessionRuntimePool()
+    good = _RuntimeValue()
+    bad = _FailOnce()
+    await pool.add("good", good)
+    failed = await pool.add("bad", bad)
+
+    with pytest.raises(ExceptionGroup, match="Failed to close"):
+        await pool.close()
+
+    assert good.close_calls == 1
+    assert failed.is_closed is False
+    assert await pool.ids() == ()
+    with pytest.raises(SessionRuntimeClosedError):
+        await pool.add("another", _RuntimeValue())
+    await pool.close()
+    await pool.close()
+
+    assert good.close_calls == 1
+    assert bad.close_calls == 2
+    assert failed.is_closed is True
+
+
+async def test_cancelled_close_waiters_do_not_cancel_owned_cleanup_or_lose_retry():
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class _FailOnce(_RuntimeValue):
+        async def close(self) -> None:
+            await super().close()
+            if self.close_calls == 1:
+                started.set()
+                await release.wait()
+                raise RuntimeError("cleanup failed after request cancellation")
+
+    value = _FailOnce()
+    runtime = SessionRuntime("one", value)
+    first = asyncio.create_task(runtime.close())
+    await asyncio.wait_for(started.wait(), timeout=_HANG_TIMEOUT)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    second = asyncio.create_task(runtime.close())
+    await asyncio.sleep(0)
+    second.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await second
+
+    observer = asyncio.create_task(runtime.close())
+    await asyncio.sleep(0)
+    release.set()
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        await observer
+    assert value.close_calls == 1
+    assert runtime.is_closed is False
+    await runtime.close()
+    assert value.close_calls == 2
+    assert runtime.is_closed is True
 
 
 async def test_cancelled_remove_keeps_id_reserved_until_teardown_finishes():

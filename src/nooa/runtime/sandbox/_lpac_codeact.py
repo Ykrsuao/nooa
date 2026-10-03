@@ -27,6 +27,11 @@ class _LpacCodeActStrategy(CodeActStrategy):
     startup, exclude parent tools, and reset on worker replacement or a new Agent
     call. They are not session-wide quotas; recovery="disabled" refuses worker
     replacement after failure within a call.
+
+    ``host_tools=True`` exposes the actual Agent through the same live self.*
+    proxy used on Linux. Host tools retain their effects outside the worker;
+    modules needed to reconstruct their return values must be explicitly staged.
+    The default continues to require exact callback grants and data snapshots.
     """
 
     def __init__(
@@ -34,12 +39,14 @@ class _LpacCodeActStrategy(CodeActStrategy):
         runtime: _AppContainerPython,
         *,
         tools: Iterable[str] = (),
+        host_tools: bool = False,
         parent_tools: Mapping[str, Callable[..., Any]] | None = None,
         tool_policies: Mapping[str, _ToolPolicy] | None = None,
         module_globals: Mapping[str, Any] | None = None,
         data_types: Iterable[type] = (),
         config: CodeActConfig | None = None,
         startup_timeout_s: float = 60,
+        timeout_grace_s: float = 0,
         broker_timeout_s: float = 30,
         frame_timeout_s: float = 5,
         memory_limit_bytes: int = 0,
@@ -67,6 +74,11 @@ class _LpacCodeActStrategy(CodeActStrategy):
         self._runtime = runtime
         self._agent_tools = tuple(tools)
         self._parent_tools = dict(parent_tools or {})
+        if type(host_tools) is not bool:
+            raise TypeError("host_tools must be a boolean")
+        if host_tools and (self._agent_tools or self._parent_tools or tool_policies):
+            raise ValueError("host_tools cannot be combined with exact tool grants")
+        self._host_tools = host_tools
         if set(self._agent_tools).intersection(self._parent_tools):
             raise ValueError("LPAC parent tools cannot replace Agent tools")
         self._tools = (*self._agent_tools, *self._parent_tools)
@@ -81,6 +93,7 @@ class _LpacCodeActStrategy(CodeActStrategy):
             raise ValueError("LPAC policies must name explicitly granted tools")
         self._data_types = tuple(data_types)
         self._startup_timeout_s = startup_timeout_s
+        self._timeout_grace_s = timeout_grace_s
         self._broker_timeout_s = broker_timeout_s
         self._frame_timeout_s = frame_timeout_s
         self._memory_limit_bytes = memory_limit_bytes
@@ -99,6 +112,8 @@ class _LpacCodeActStrategy(CodeActStrategy):
 
     def get_block_overrides(self):
         blocks = super().get_block_overrides()
+        if self._host_tools:
+            return blocks
         # Do not advertise the live agent's ungranted fields/methods as tools.
         blocks["self"] = "Available parent tools: " + ", ".join(
             f"self.{name}" for name in self._tools
@@ -120,6 +135,8 @@ class _LpacCodeActStrategy(CodeActStrategy):
         return _LpacExecutor(
             self._runtime,
             tools=tools,
+            host_tools=self._host_tools,
+            live_agent=runtime.agent if self._host_tools else None,
             tool_policies=self._tool_policies,
             module_globals=self._module_globals,
             framework_builtins={
@@ -132,6 +149,7 @@ class _LpacCodeActStrategy(CodeActStrategy):
             restrictions=self.config.restrictions,
             cell_timeout=self.config.cell_timeout,
             startup_timeout_s=self._startup_timeout_s,
+            timeout_grace_s=self._timeout_grace_s,
             broker_timeout_s=self._broker_timeout_s,
             frame_timeout_s=self._frame_timeout_s,
             memory_limit_bytes=self._memory_limit_bytes,

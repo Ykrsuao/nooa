@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures as futures
+import contextlib
 import logging
 import multiprocessing as mp
 import os
@@ -133,6 +134,10 @@ class SandboxedExecutor:
         self._req_id = 0
         self._closed = False
         self._disabled = False  # set when recovery="disabled" after a kill
+        self._cell_stop = threading.Event()
+        self._reader_task: asyncio.Task | None = None
+        self._cell_task: asyncio.Task | None = None
+        self._broker_tasks: set[asyncio.Task] = set()
 
         # A typo'd/missing workspace would otherwise become a silently unwritable
         # sandbox; create it up front (it's the parent's own filesystem).
@@ -244,24 +249,51 @@ class SandboxedExecutor:
             proc.join(timeout=1.0)
 
     async def _aterminate_worker(self) -> None:
-        """Async teardown: send signals inline (fast, non-blocking) but run the
-        blocking ``proc.join`` off the event loop so a worker kill/restart does
-        not stall the loop (and other concurrent sessions) for up to ~2s."""
+        """Retire the worker and drain its reader/tools before relinquishing ownership."""
+        task = asyncio.create_task(self._retire_worker())
+        cancelled = False
+        while True:
+            try:
+                await asyncio.shield(task)
+                break
+            except asyncio.CancelledError:
+                if task.cancelled():
+                    raise
+                cancelled = True
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _retire_worker(self) -> None:
+        self._cell_stop.set()
         proc = self._detach_worker()
-        if proc is None:
-            return
-        if proc.is_alive():
-            proc.terminate()
-            await asyncio.to_thread(proc.join, 1.0)
-        if proc.is_alive():
-            proc.kill()
-            await asyncio.to_thread(proc.join, 1.0)
+        if proc is not None:
+            if proc.is_alive():
+                proc.terminate()
+                await asyncio.to_thread(proc.join, 1.0)
+            if proc.is_alive():
+                proc.kill()
+                await asyncio.to_thread(proc.join, 1.0)
+        # The broker polls the stop event even with broker_timeout_s=0. Killing
+        # the child also unblocks a reader waiting for pipe bytes. Await that
+        # reader before draining callbacks so it cannot schedule another one.
+        if self._reader_task is not None:
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await self._reader_task
+            self._reader_task = None
+        tasks = list(self._broker_tasks)
+        for task in tasks:
+            if not task.cancelling():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _restart_worker(self) -> None:
-        await self._aterminate_worker()
         if self._config.recovery == "disabled":
-            # Do not resurrect the worker; subsequent cells fail deterministically.
+            # Mark the failure before cancellable retirement so cancellation
+            # during cleanup cannot accidentally re-enable the next cell.
             self._disabled = True
+        await self._aterminate_worker()
+        if self._disabled:
+            # Do not resurrect the worker; subsequent cells fail deterministically.
             return
         self._start_worker()  # fork stays on the loop thread (fork-from-thread is unsafe)
 
@@ -289,6 +321,8 @@ class SandboxedExecutor:
         if self._closed:
             raise WorkerDiedError("sandbox executor is closed")
         async with self._lock:
+            if self._closed:
+                raise WorkerDiedError("sandbox executor is closed")
             if self._disabled:
                 # recovery="disabled": a prior kill retired the worker; report a
                 # cell error rather than raising out of the strategy loop.
@@ -314,8 +348,29 @@ class SandboxedExecutor:
             if self._cell_timeout:
                 deadline = self._cell_timeout + self._config.timeout_grace_s
             loop = asyncio.get_running_loop()
+            self._cell_stop = threading.Event()
+            self._cell_task = asyncio.current_task()
             try:
-                response = await asyncio.to_thread(self._recv_until_result, req_id, deadline, loop)
+                self._reader_task = asyncio.create_task(
+                    asyncio.to_thread(
+                        self._recv_until_result,
+                        req_id,
+                        deadline,
+                        loop,
+                        conn=self._conn,
+                        proc=self._proc,
+                        stop=self._cell_stop,
+                    )
+                )
+                response = await asyncio.shield(self._reader_task)
+                self._reader_task = None
+            except asyncio.CancelledError:
+                try:
+                    await self._aterminate_worker()
+                finally:
+                    if self._config.recovery == "disabled":
+                        self._disabled = True
+                raise
             except CellTimeoutError as exc:
                 await self._restart_worker()
                 return self._synth_error(exc)
@@ -323,6 +378,8 @@ class SandboxedExecutor:
                 err = self._classify_worker_death(exc)
                 await self._restart_worker()
                 return self._synth_error(err)
+            finally:
+                self._cell_task = None
             try:
                 dto: ResultDTO = dto_from_wire(response.get("result"))
             except CellSerializationError as exc:
@@ -428,7 +485,7 @@ class SandboxedExecutor:
                 "error": _bounded_text(exc, "CellSerializationError", limit=self._max_error),
             }
         else:
-            future = asyncio.run_coroutine_threadsafe(self._dispatch_tool_call(call), loop)
+            future = asyncio.run_coroutine_threadsafe(self._dispatch_broker_call(call), loop)
             # Brokered ``self.*`` work runs parent-side while the worker idles — it
             # gets its OWN bound (broker_timeout_s), not the cell deadline: killing
             # the worker because the parent was slow (e.g. memory consolidation LLM
@@ -522,6 +579,17 @@ class SandboxedExecutor:
         for part in path:
             obj = getattr(obj, part)
         return obj
+
+    async def _dispatch_broker_call(self, msg: dict[str, Any]) -> dict[str, Any]:
+        task = asyncio.current_task()
+        assert task is not None
+        self._broker_tasks.add(task)
+        try:
+            if self._cell_stop.is_set():
+                raise asyncio.CancelledError
+            return await self._dispatch_tool_call(msg)
+        finally:
+            self._broker_tasks.discard(task)
 
     async def _dispatch_tool_call(self, msg: dict[str, Any]) -> dict[str, Any]:
         """Run a brokered ``self.<path>`` access against the parent's live agent."""
@@ -659,6 +727,9 @@ class SandboxedExecutor:
         if self._closed:
             return
         self._closed = True
+        running = self._cell_task
+        if running is not None and running is not asyncio.current_task():
+            running.cancel()
         async with self._lock:
             conn = self._conn
             if conn is not None and self._proc is not None and self._proc.is_alive():

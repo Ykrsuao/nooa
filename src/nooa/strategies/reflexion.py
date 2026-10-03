@@ -15,6 +15,7 @@ Inspired by: Methodic's Reflexion strategy
 """
 
 import logging
+from contextlib import AbstractContextManager
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
@@ -125,6 +126,10 @@ class ReflexionStrategy(GenerationStrategy):
     def requires_lock(self) -> bool:
         """Inherit lock requirement from base strategy."""
         return self.base.requires_lock
+
+    def call_scope(self, *, nested: bool = False) -> AbstractContextManager[None]:
+        """Reserve the base strategy before waiting for the Agent generation lock."""
+        return self.base.call_scope(nested=nested)
 
     @strategy(TemplateStrategy())
     async def reflection_prompt(self, runtime: RuntimeServices, task: str, result: str) -> str:

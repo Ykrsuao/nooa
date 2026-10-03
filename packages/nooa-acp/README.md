@@ -7,12 +7,21 @@ uses: CodeAct, repository tools, a persistent shell, installed skills, workspace
 slash commands and durable sessions, with file edits and terminal commands
 surfaced as structured activity.
 
-It hosts `nooa_cli.coding.CodingAgent` directly. Repository instructions
+By default it hosts `nooa_cli.coding.CodingAgent` directly. Repository instructions
 (`AGENTS.md`), coding tools, summarization, installed `nooa.skills` entry points
 and semantic file and terminal activity therefore have no separate ACP
 implementations — fix something here and the terminal host gets it too.
 
 This is new and we would like it exercised. If something breaks, please say so.
+
+`--sandbox auto --sandbox-mode code` isolates generated Python in the native
+Windows or Linux sandbox while keeping this same `CodingAgent`, including its
+trusted host shell, skills and MCP. Host commands can connect to the network
+and their file changes persist; they are not isolated by the Python sandbox.
+`--sandbox auto` alone keeps the existing `strict` mode, with bounded workspace
+file tools, disposable isolated commands and no skills/MCP.
+macOS is currently unsupported. See [sandbox operation and limits](../../docs/acp-sandbox.md)
+for setup, command snapshot behavior and platform differences.
 
 ## Install
 
@@ -52,12 +61,24 @@ Credentials go in `env` here rather than in Zed's own settings: the agent is a
 separate process and inherits only what Zed passes it. Use a secret-manager
 wrapper as the `command` if you would rather not put a key in `settings.json`.
 
-From a checkout of this repository, point the client at the workspace package
-instead:
+From a checkout whose environment is already installed, use `uv run` to find
+the local executable. For example, in PowerShell:
 
-```bash
-uv run --project "$PWD" --package nooa-acp -- nooa-acp
+```powershell
+uv run --project "E:\rivon\labs-OO-Agents" --no-sync nooa-acp --model YOUR_MODEL
 ```
+
+Replace the path with your checkout and `YOUR_MODEL` with a LiteLLM model name
+or configured NOOA alias; omit `--model YOUR_MODEL` when `NOOA_MODEL` is set.
+The absolute project path works from any directory, without activating `.venv`
+or adding `.venv\Scripts` to `PATH`. `--no-sync` uses the existing environment
+without changing dependencies. To configure an ACP client, use `uv` as its
+command and the arguments above starting with `run`. Add
+`--sandbox auto --sandbox-mode code` for the shared upstream-compatible tool
+model, or `--sandbox auto --sandbox-mode strict` for restricted workspace tools.
+`--sandbox-network on` optionally enables direct Python-worker networking in
+code mode; host tools retain their networking independently. The server waits for ACP input on stdin/stdout; it
+does not open an interactive terminal chat.
 
 ### MCP servers do not carry over from Zed
 
@@ -91,6 +112,10 @@ drives it. `--model` accepts any LiteLLM model name or configured NOOA alias.
 
 ## Opening a repository runs code from it
 
+This section describes both default `--sandbox off` and `--sandbox-mode code`:
+workspace Python and host tools are trusted in both. Only `--sandbox-mode strict`
+skips workspace Python skills/libraries/settings and rejects forwarded MCP servers.
+
 **Creating a session imports Python from the workspace, before you send a
 prompt.** This is deliberate — it is how workspace skills work — but it means
 opening a folder is enough to execute code it contains. Treat opening a
@@ -120,7 +145,7 @@ or start a separate server per workspace with credentials scoped to that task.
 ## How it behaves
 
 ACP uses standard input and output for JSON-RPC. Diagnostics are written to
-standard error. The agent can execute generated Python and shell commands, so
+standard error. In the default `--sandbox off` mode, the agent can execute generated Python and shell commands, so
 use an OS-level sandbox for untrusted tasks. Generated code shares the agent's
 process environment, including model credentials; launch it with only the
 credentials and network access that the session may use.
@@ -142,6 +167,11 @@ in `session/list` and are replayed as conversation history by `session/load`.
 Open only repositories whose code and conversation history you trust. The
 adapter also advertises session close; closing a live session preserves its
 durable history.
+
+Sandbox sessions instead store transcripts under the trusted user directory,
+outside the granted workspace. Their file edits persist, but commands run in
+disposable snapshots and command changes are discarded. The regular skills,
+shell and MCP behavior described below applies to `--sandbox off`.
 
 The current stdio adapter hosts those live agents in its own process. That is
 an adapter-private implementation detail rather than part of the durable

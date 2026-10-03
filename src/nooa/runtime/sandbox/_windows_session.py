@@ -6,7 +6,8 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -124,6 +125,7 @@ class _WindowsSandboxSession:
         runtime = _AppContainerPython(
             inputs=policy.inputs,
             workspace_access=policy.workspace_access,
+            network=policy.network,
             recovery_directory=policy.recovery_directory,
             _retain=self._retain_runtime,
         )
@@ -230,38 +232,65 @@ class _WindowsSandboxSession:
 class _ManagedLpacStrategy(_LpacCodeActStrategy):
     def __init__(self, owner, **kwargs):
         self._owner = owner
+        self._admitted_task: asyncio.Task[Any] | None = None
+        self._execution_started = False
         policy = owner.policy
         super().__init__(
             owner._runtime,
             tools=policy.tools,
             tool_policies=policy.tool_policies,
             startup_timeout_s=policy.startup_timeout_s,
+            timeout_grace_s=policy.timeout_grace_s,
             broker_timeout_s=policy.broker_timeout_s,
             frame_timeout_s=policy.frame_timeout_s,
             memory_limit_bytes=policy.memory_limit_bytes,
             cpu_time_limit_s=policy.cpu_time_limit_s,
             recovery=policy.recovery,
+            host_tools=policy.host_tools,
             **kwargs,
         )
 
     def get_block_overrides(self):
         self._owner._require_ready()
         blocks = super().get_block_overrides()
-        blocks["sandbox"] = _render_windows_policy(self._owner.policy)
+        blocks["sandbox"] = (
+            _render_windows_policy(self._owner.policy) if self._owner.policy.context_block else ""
+        )
         return blocks
 
     async def sandbox_context(self, runtime):
         self._owner._require_ready()
-        return _render_windows_policy(self._owner.policy)
+        return (
+            _render_windows_policy(self._owner.policy) if self._owner.policy.context_block else ""
+        )
+
+    @contextmanager
+    def call_scope(self, *, nested: bool = False) -> Iterator[None]:
+        # A composite strategy owns admission across its sequential base calls.
+        # Only that task can borrow it, and never while a worker call is active.
+        if nested and self._admitted_task is asyncio.current_task() and not self._execution_started:
+            yield
+            return
+        self._owner._begin_call()
+        self._admitted_task = asyncio.current_task()
+        self._execution_started = False
+        try:
+            yield
+        finally:
+            self._admitted_task = None
+            self._owner._active = False
 
     async def execute(self, runtime, call):
-        self._owner._begin_call()
-        try:
-            if self.config.cell_timeout != self._owner.policy.cell_timeout_s:
-                raise SandboxUnavailable("managed LPAC deadlines cannot be reconfigured")
-            return await super().execute(runtime, call)
-        finally:
-            self._owner._active = False
+        # Direct execute() calls acquire admission too. Calls already admitted
+        # by the runtime borrow its scope through teardown instead of releasing it.
+        with self.call_scope(nested=True):
+            self._execution_started = True
+            try:
+                if self.config.cell_timeout != self._owner.policy.cell_timeout_s:
+                    raise SandboxUnavailable("managed LPAC deadlines cannot be reconfigured")
+                return await super().execute(runtime, call)
+            finally:
+                self._execution_started = False
 
     def _create_sandbox_executor(self, runtime, call, builtins):
         executor = super()._create_sandbox_executor(runtime, call, builtins)

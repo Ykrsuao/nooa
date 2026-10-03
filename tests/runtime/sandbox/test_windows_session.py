@@ -83,6 +83,7 @@ def test_policy_refuses_invalid_grants_and_units(field, value):
     "name",
     [
         "cell_timeout_s",
+        "timeout_grace_s",
         "startup_timeout_s",
         "broker_timeout_s",
         "frame_timeout_s",
@@ -119,7 +120,7 @@ def test_policy_refuses_async_predicates_and_unknown_fields():
     with pytest.raises(TypeError, match="synchronous"):
         WindowsSandboxPolicy(tools=("allowed",), tool_policies={"allowed": predicate})
     with pytest.raises(TypeError):
-        WindowsSandboxPolicy(network=True)
+        WindowsSandboxPolicy(unknown_permission=True)
 
 
 def test_context_default_policy_does_not_claim_linux_or_live_agent_semantics():
@@ -237,6 +238,7 @@ def test_context_contract_covers_every_policy_field():
         "tools",
         "tool_policies",
         "cell_timeout_s",
+        "timeout_grace_s",
         "startup_timeout_s",
         "broker_timeout_s",
         "frame_timeout_s",
@@ -249,7 +251,25 @@ def test_context_contract_covers_every_policy_field():
         "recovery",
         # Ownership metadata is intentionally omitted from the Agent's context.
         "recovery_directory",
+        "network",
+        "host_tools",
+        "context_block",
     }
+
+
+def test_host_tool_context_distinguishes_cell_policy_from_real_host_effects():
+    text = _render_windows_policy(WindowsSandboxPolicy(host_tools=True))
+    assert "OUTSIDE the cell" in text
+    assert "shell changes persist" in text
+    assert "do not constrain host tools" in text
+    assert "direct internet sockets are denied" in text
+    assert "No other Agent methods" not in text
+
+
+@pytest.mark.parametrize("kwargs", [{"tools": ("lookup",)}, {"files": {"a": FileGrant("a")}}])
+def test_host_tools_cannot_silently_override_exact_grants(kwargs):
+    with pytest.raises(ValueError, match="host_tools cannot be combined"):
+        WindowsSandboxPolicy(host_tools=True, **kwargs)
 
 
 class _Resource:
@@ -372,6 +392,307 @@ async def test_active_calls_refuse_concurrency_and_close(fake_provision):
         owner._active = False
         with pytest.raises(SandboxUnavailable, match="not ready"):
             owner._begin_call()
+
+
+class _PausedLLM(FakeLLMClient):
+    def __init__(self):
+        super().__init__(
+            [
+                LLMResponse(
+                    raw_response=None,
+                    content="",
+                    finish_reason="tool_calls",
+                    tool_calls=[
+                        ToolCall(
+                            id=f"result-{value}", name="return_result", arguments='{"result": 7}'
+                        )
+                    ],
+                )
+                for value in range(3)
+            ],
+            strict_exhaustion=True,
+        )
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def acall(self, *args, **kwargs):
+        self.started.set()
+        await self.release.wait()
+        return await super().acall(*args, **kwargs)
+
+
+@pytest.fixture
+def admission_backend(monkeypatch, fake_provision):
+    from nooa.runtime.sandbox import _lpac_codeact
+
+    # Keep Agent, CodeAct, FakeLLM and managed teardown real; replace only native
+    # allocation. These calls use return_result, so no worker needs to run code.
+    monkeypatch.setattr(
+        _lpac_codeact,
+        "_LpacExecutor",
+        lambda *args, **kwargs: _Resource("executor", fake_provision),
+    )
+
+    async def create(owner):
+        await owner.__aenter__()
+        owner._files = owner._directories = None
+        return owner.strategy(config=CodeActConfig(prefill=None))
+
+    return create
+
+
+@pytest.mark.parametrize("same_agent", [True, False], ids=["same-agent", "shared-session"])
+@pytest.mark.parametrize("cancel_first", [False, True], ids=["completed", "cancelled"])
+async def test_agent_calls_reject_overlap_and_allow_reuse(
+    admission_backend, same_agent, cancel_first
+):
+    owner = WindowsSandboxSession(WindowsSandboxPolicy())
+    backend = await admission_backend(owner)
+
+    class Demo(Agent):
+        @strategy(backend)
+        async def compute(self) -> int:
+            """Return seven."""
+            ...
+
+    llm = _PausedLLM()
+    first_agent = Demo(llm=llm)
+    second_agent = first_agent if same_agent else Demo(llm=llm)
+    tasks = []
+    try:
+        tasks.append(asyncio.create_task(first_agent.compute()))
+        await asyncio.wait_for(llm.started.wait(), 5)
+        tasks.append(asyncio.create_task(second_agent.compute()))
+        done, _ = await asyncio.wait([tasks[1]], timeout=0.2)
+        assert tasks[1] in done, "overlapping call queued behind the Agent generation lock"
+        with pytest.raises(SandboxUnavailable, match="concurrent or nested"):
+            await tasks[1]
+        assert owner._active and not tasks[0].done()
+        if cancel_first:
+            tasks[0].cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await tasks[0]
+        else:
+            llm.release.set()
+            assert await tasks[0] == 7
+        assert not owner._active
+        llm.release.set()
+        assert await first_agent.compute() == 7
+    finally:
+        llm.release.set()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await first_agent.aclose()
+        if second_agent is not first_agent:
+            await second_agent.aclose()
+        await llm.aclose()
+        await owner.aclose()
+
+
+@pytest.mark.parametrize("entry", ["agent", "nested-strategy", "direct-strategy"])
+async def test_managed_nested_calls_cannot_reuse_admission(admission_backend, monkeypatch, entry):
+    owner = WindowsSandboxSession(WindowsSandboxPolicy())
+    backend = await admission_backend(owner)
+
+    class Demo(Agent):
+        @strategy(backend)
+        async def compute(self) -> int:
+            """Return seven."""
+            ...
+
+    llm = _PausedLLM()
+    llm.release.set()
+    agent = Demo(llm=llm)
+    original_acall = llm.acall
+    reentered = False
+
+    async def reenter(*args, **kwargs):
+        nonlocal reentered
+        if not reentered:
+            reentered = True
+            with pytest.raises(SandboxUnavailable, match="concurrent or nested"):
+                if entry == "agent":
+                    await agent.compute()
+                elif entry == "nested-strategy":
+                    await agent.runtime.execute_nested(backend, agent.runtime.current_call)
+                else:
+                    await backend.execute(agent.runtime, agent.runtime.current_call)
+            assert owner._active, "rejected nested call released the outer admission"
+        return await original_acall(*args, **kwargs)
+
+    monkeypatch.setattr(llm, "acall", reenter)
+    try:
+        assert await agent.compute() == 7
+        assert reentered and not owner._active
+        assert await agent.compute() == 7
+    finally:
+        await agent.aclose()
+        await llm.aclose()
+        await owner.aclose()
+
+
+async def test_call_override_releases_admission_when_cancelled_waiting_for_lock(admission_backend):
+    owner = WindowsSandboxSession(WindowsSandboxPolicy())
+    backend = await admission_backend(owner)
+
+    class Demo(Agent):
+        async def compute(self) -> int:
+            """Return seven."""
+            ...
+
+    llm = _PausedLLM()
+    llm.release.set()
+    agent = Demo(llm=llm)
+    task = None
+    try:
+        agent.runtime._ensure_generation_lock_on_current_loop()
+        async with agent.runtime._generation_lock:
+            task = asyncio.create_task(agent.compute(_strategy=backend))
+            async with asyncio.timeout(5):
+                while not owner._active:
+                    await asyncio.sleep(0)
+            assert not llm.started.is_set()
+            with pytest.raises(SandboxUnavailable, match="concurrent or nested"):
+                await asyncio.wait_for(agent.compute(_strategy=backend), 1)
+            assert owner._active
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert not owner._active
+        assert await agent.compute(_strategy=backend) == 7
+    finally:
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await agent.aclose()
+        await llm.aclose()
+        await owner.aclose()
+
+
+async def test_generation_setup_error_releases_managed_admission(admission_backend):
+    owner = WindowsSandboxSession(WindowsSandboxPolicy())
+    backend = await admission_backend(owner)
+
+    class Demo(Agent):
+        @strategy(backend)
+        async def compute(self) -> int:
+            """Return seven."""
+            ...
+
+    def fail_resolution(_):
+        raise ValueError("injected LLM resolution failure")
+
+    llm = _PausedLLM()
+    llm.release.set()
+    agent = Demo(llm=llm)
+    try:
+        with pytest.raises(RuntimeError, match="injected LLM resolution failure"):
+            await agent.compute(llm=fail_resolution)
+        assert not owner._active and not llm.started.is_set()
+        assert await agent.compute() == 7
+    finally:
+        await agent.aclose()
+        await llm.aclose()
+        await owner.aclose()
+
+
+async def test_ordinary_agent_generation_still_queues():
+    from nooa.strategies import CodeActStrategy
+
+    class Demo(Agent):
+        @strategy(CodeActStrategy(CodeActConfig(prefill=None)))
+        async def compute(self) -> int:
+            """Return seven."""
+            ...
+
+    llm = _PausedLLM()
+    agent = Demo(llm=llm)
+    tasks = []
+    try:
+        tasks.append(asyncio.create_task(agent.compute()))
+        await asyncio.wait_for(llm.started.wait(), 5)
+        tasks.append(asyncio.create_task(agent.compute()))
+        done, _ = await asyncio.wait([tasks[1]], timeout=0.1)
+        assert not done
+        llm.release.set()
+        assert await asyncio.gather(*tasks) == [7, 7]
+        assert llm.call_count == 2
+    finally:
+        llm.release.set()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await agent.aclose()
+        await llm.aclose()
+
+
+async def test_reflexion_holds_admission_between_sequential_base_calls(admission_backend):
+    from nooa.config.strategy_config import ReflexionConfig
+    from nooa.strategies.reflexion import ReflectionOutput, ReflexionStrategy
+
+    owner = WindowsSandboxSession(WindowsSandboxPolicy())
+    backend = await admission_backend(owner)
+    composite = ReflexionStrategy(base=backend, config=ReflexionConfig(max_iterations=2))
+
+    class Demo(Agent):
+        @strategy(composite)
+        async def compute(self) -> int:
+            """Return seven."""
+            ...
+
+    started, release = asyncio.Event(), asyncio.Event()
+
+    class ReflectingLLM(FakeLLMClient):
+        async def acall(self, *args, **kwargs):
+            if kwargs.get("output_model") is ReflectionOutput and not started.is_set():
+                started.set()
+                await release.wait()
+            return await super().acall(*args, **kwargs)
+
+    responses = []
+    for index, satisfactory in enumerate([False, True, True]):
+        responses.extend(
+            [
+                LLMResponse(
+                    raw_response=None,
+                    content="",
+                    finish_reason="tool_calls",
+                    tool_calls=[
+                        ToolCall(id=f"r-{index}", name="return_result", arguments='{"result": 7}')
+                    ],
+                ),
+                LLMResponse(
+                    raw_response=None,
+                    content="",
+                    parsed=ReflectionOutput(is_satisfactory=satisfactory),
+                ),
+            ]
+        )
+    llm = ReflectingLLM(responses, strict_exhaustion=True)
+    agent = Demo(llm=llm)
+    task = asyncio.create_task(agent.compute())
+    try:
+        await asyncio.wait_for(started.wait(), 5)
+        assert owner._active and not backend._execution_started
+        with pytest.raises(SandboxUnavailable, match="concurrent or nested"):
+            await asyncio.wait_for(agent.compute(), 1)
+        assert owner._active
+        release.set()
+        assert await task == 7
+        assert not owner._active
+        assert await agent.compute() == 7
+        assert llm.remaining_responses == 0
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await agent.aclose()
+        await llm.aclose()
+        await owner.aclose()
 
 
 async def test_cross_loop_use_is_refused(fake_provision):
@@ -563,6 +884,7 @@ async def test_provisioning_maps_grants_limits_and_staging(monkeypatch, tmp_path
         max_response_bytes=234,
         https_timeout_s=7,
         cell_timeout_s=None,
+        timeout_grace_s=0.75,
         broker_timeout_s=0,
         frame_timeout_s=2,
         memory_limit_bytes=1024**3,
@@ -585,6 +907,7 @@ async def test_provisioning_maps_grants_limits_and_staging(monkeypatch, tmp_path
         assert await backend._parent_tools["fetch_https"]("site") == {"body": b"ok"}
         assert backend._broker_timeout_s == 0 and backend._frame_timeout_s == 2
         assert backend.config.cell_timeout is None
+        assert backend._timeout_grace_s == 0.75
         assert backend._memory_limit_bytes == 1024**3 and backend._cpu_time_limit_s == 15
         assert backend._recovery == "disabled"
     assert observed["runtime"]["workspace_access"] == "read_write"

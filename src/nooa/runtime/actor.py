@@ -15,7 +15,7 @@ import tokenize
 import types
 import warnings
 from collections.abc import Callable, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast, get_type_hints
 from uuid import uuid4
@@ -1958,7 +1958,15 @@ class ActorRuntime:
 
         try:
             # Execute nested strategy directly (we're already in a generation session)
-            result = await strategy.execute(self, call)
+            from nooa.strategies import GenerationStrategy as GenerationStrategyABC
+
+            scope = (
+                strategy.call_scope(nested=True)
+                if isinstance(strategy, GenerationStrategyABC)
+                else nullcontext()
+            )
+            with scope:
+                result = await strategy.execute(self, call)
             return result
         except BaseException as e:
             exception_caught = e
@@ -2459,21 +2467,24 @@ class ActorRuntime:
         needs_generation = getattr(base_method, "_needs_generation", False)
 
         if needs_generation:
-            # Check if we're already in a generation session (nested call)
-            in_session = _in_generation_session.get()
+            from nooa.strategies import GenerationStrategy as GenerationStrategyABC
+            from nooa.strategies import get_default_strategy
 
-            if in_session:
-                # We're inside a generation session - execute inline without acquiring lock
-                # This prevents deadlock when generated code calls other @strategy methods
-                return await self._execute_with_generation(method, args, kwargs, method_name)
-            else:
-                # Get strategy to check requires_lock
-                from nooa.strategies import GenerationStrategy as GenerationStrategyABC
-                from nooa.strategies import get_default_strategy
+            call_strategy = kwargs.get("_strategy")
+            decorator_strategy = getattr(base_method, "_plan_strategy", None)
+            strategy = call_strategy or decorator_strategy or get_default_strategy()
 
-                call_strategy = kwargs.get("_strategy")
-                decorator_strategy = getattr(base_method, "_plan_strategy", None)
-                strategy = call_strategy or decorator_strategy or get_default_strategy()
+            # Admit before any lock wait, including nested calls that inherit a
+            # generation session. The scope also owns cancellation during setup.
+            scope = (
+                strategy.call_scope()
+                if isinstance(strategy, GenerationStrategyABC)
+                else nullcontext()
+            )
+            with scope:
+                if _in_generation_session.get():
+                    # Nested generation inherits the lock to prevent deadlock.
+                    return await self._execute_with_generation(method, args, kwargs, method_name)
 
                 # Only acquire lock if strategy requires it
                 if isinstance(strategy, GenerationStrategyABC) and strategy.requires_lock:

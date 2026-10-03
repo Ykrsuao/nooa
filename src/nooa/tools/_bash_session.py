@@ -325,14 +325,15 @@ class BashSession:
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(self._cwd),
                 env=env,
-                # A hidden console, so console programs never flash a window.
-                creationflags=subprocess.CREATE_NO_WINDOW,
+                # Prevent BASH_ENV and other startup code from spawning children
+                # before the process joins its job. Keep console windows hidden.
+                creationflags=subprocess.CREATE_NO_WINDOW | _win_bash.CREATE_SUSPENDED,
             )
             self._process = process
             try:
-                # Bash is idle on stdin, so nothing it starts escapes the job.
                 self._job = _win_bash.ProcessJob()
                 self._job.assign(process.pid)
+                _win_bash.resume_suspended_process(process.pid)
                 token = secrets.token_hex(16)
                 assert process.stdin is not None
                 process.stdin.write(
@@ -344,17 +345,14 @@ class BashSession:
                 )
             except BaseException:
                 self._close_job()
-                try:
-                    if process.returncode is None:
-                        try:
-                            process.kill()
-                        except ProcessLookupError:
-                            pass
-                    # Reap even a cancelled startup and close its pipe transports
-                    # before another attempt replaces the process reference.
-                    await process.communicate()
-                finally:
-                    self._process = None
+                if process.returncode is None:
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
+                # Keep ownership until shielded cleanup has reaped the process
+                # and closed its pipes, even if startup is cancelled again.
+                await self.close()
                 raise
         finally:
             listener.close()

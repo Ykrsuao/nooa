@@ -8,6 +8,7 @@ RuntimeServices Protocol - what strategies can use from the runtime.
 
 import inspect
 from abc import ABC, abstractmethod
+from contextlib import AbstractContextManager, nullcontext
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from nooa.metaclass import AgentMeta
@@ -265,6 +266,19 @@ class GenerationStrategy(ABC, metaclass=AgentMeta):
         for Methodic-style stateless strategies that can run concurrently.
         """
         return True
+
+    def call_scope(self, *, nested: bool = False) -> AbstractContextManager[None]:
+        """Admit a call before the runtime waits for the generation lock.
+
+        Stateful strategies can reserve their resources here and reject overlap
+        immediately. The scope covers setup, execution and teardown, releasing
+        admission even if setup fails or a caller waiting for the lock is cancelled.
+        Ordinary strategies retain the runtime's serialized generation behavior.
+        Composite strategies delegate this scope to their base strategy. Nested
+        strategy execution may borrow that reservation when ``nested`` is true;
+        a nested Agent method always requests a separate, non-borrowing scope.
+        """
+        return nullcontext()
 
     @abstractmethod
     async def execute(self, runtime: RuntimeServices, call: "CurrentCall") -> Any:

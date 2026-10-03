@@ -8,6 +8,7 @@ import os
 import sys
 import threading
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -16,6 +17,102 @@ if sys.platform != "win32":
 
 from nooa.runtime.sandbox import _windows_cleanup as cleanup  # noqa: E402
 from nooa.runtime.sandbox._appcontainer import _AppContainerPython  # noqa: E402
+
+
+@pytest.mark.parametrize("enrolled", [False, True], ids=["temporary", "recovery"])
+@pytest.mark.parametrize("failure", ["_sid_text", "_current_user_sid", "_registry_read_sid"])
+def test_profile_initialization_rollback_retains_owner_for_retry(
+    tmp_path, monkeypatch, enrolled, failure
+):
+    import ctypes
+
+    from nooa.runtime.sandbox import _win_appcontainer as native
+
+    retained = []
+    delete = Mock(side_effect=[-2147024891, 0])
+    free = Mock()
+
+    def create(*args):
+        ctypes.cast(args[-1], ctypes.POINTER(ctypes.c_void_p))[0] = 1
+        return 0
+
+    def retain(owner):
+        retained.append(owner)
+        # The real recovery lease is already initialized. Inject failures only
+        # into profile initialization, without creating a native profile or SID.
+        monkeypatch.setattr(native, "_CreateProfile", create)
+        monkeypatch.setattr(native, "_DeleteProfile", delete)
+        monkeypatch.setattr(native, "FreeSid", free)
+        monkeypatch.setattr(native, "_sid_text", lambda sid: "S-1-15-2-test")
+        monkeypatch.setattr(native, "_current_user_sid", lambda: "S-1-5-21-test")
+        monkeypatch.setattr(native, "_registry_read_sid", lambda: None)
+        monkeypatch.setattr(native, failure, Mock(side_effect=OSError("SID lookup failed")))
+
+    try:
+        with pytest.raises(OSError, match="HRESULT"):
+            _AppContainerPython(
+                recovery_directory=tmp_path / "ledger" if enrolled else None,
+                _retain=retain,
+            )
+        owner = retained[0]
+        assert owner._profile is not None
+        assert owner._profile._created and owner._profile.sid
+        assert not owner._closed and owner.root.exists()
+        assert delete.call_count == 1
+        free.assert_not_called()
+
+        owner.close()
+
+        assert delete.call_count == 2
+        assert delete.call_args.args == (owner._profile.name,)
+        free.assert_called_once()
+        assert not owner._profile._created and not owner._profile.sid
+        assert owner._closed and not owner.root.exists()
+        if enrolled:
+            assert owner._lease._fd is None
+            assert not owner.root.parent.exists()
+        owner.close()
+        assert delete.call_count == 2
+    finally:
+        delete.side_effect = None
+        delete.return_value = 0
+        for owner in retained:
+            owner.close()
+
+
+def test_standalone_profile_rolls_back_initialization_failure(monkeypatch):
+    from nooa.runtime.sandbox import _win_appcontainer as native
+
+    create = Mock(return_value=0)
+    delete = Mock(return_value=0)
+    monkeypatch.setattr(native, "_CreateProfile", create)
+    monkeypatch.setattr(native, "_DeleteProfile", delete)
+    monkeypatch.setattr(native, "_sid_text", Mock(side_effect=OSError("SID lookup failed")))
+
+    with pytest.raises(OSError, match="SID lookup failed"):
+        native.Profile()
+
+    create.assert_called_once()
+    delete.assert_called_once_with(create.call_args.args[0])
+
+
+def test_profile_retention_failure_precedes_native_allocation(monkeypatch):
+    from nooa.runtime.sandbox import _win_appcontainer as native
+
+    create = Mock(return_value=0)
+    delete = Mock(return_value=0)
+    monkeypatch.setattr(native, "_CreateProfile", create)
+    monkeypatch.setattr(native, "_DeleteProfile", delete)
+
+    def fail_retention(profile):
+        profile.close()
+        raise RuntimeError("owner rejected profile")
+
+    with pytest.raises(RuntimeError, match="owner rejected profile"):
+        native.Profile(_retain=fail_retention)
+
+    create.assert_not_called()
+    delete.assert_not_called()
 
 
 def test_unicode_and_long_paths_are_removed(tmp_path):

@@ -16,8 +16,11 @@ def stubbed_serve(monkeypatch):
     """Capture the llm_factory the command builds instead of serving."""
     captured = {}
 
-    def fake_serve(llm_factory):
+    def fake_serve(llm_factory, *, sandbox="off", sandbox_mode="strict", sandbox_network="off"):
         captured["llm_factory"] = llm_factory
+        captured["sandbox"] = sandbox
+        captured["sandbox_mode"] = sandbox_mode
+        captured["sandbox_network"] = sandbox_network
         return "coroutine-placeholder"
 
     monkeypatch.setattr("nooa_acp.server.serve", fake_serve)
@@ -64,6 +67,84 @@ def test_explicit_flag_overrides_the_environment(monkeypatch, stubbed_serve):
     assert result.exit_code == 0, result.output
     stubbed_serve["llm_factory"]()
     assert requested["name"] == "anthropic/claude-sonnet-4-5"
+
+
+@pytest.mark.parametrize("sandbox", ["off", "auto", "linux", "windows"])
+def test_sandbox_selection_is_passed_to_server(stubbed_serve, sandbox):
+    result = click.testing.CliRunner().invoke(command, ["--model", "test", "--sandbox", sandbox])
+    assert result.exit_code == 0, result.output
+    assert stubbed_serve["sandbox"] == sandbox
+
+
+def test_sandbox_defaults_to_off(stubbed_serve):
+    result = click.testing.CliRunner().invoke(command, ["--model", "test"])
+    assert result.exit_code == 0, result.output
+    assert stubbed_serve["sandbox"] == "off"
+    assert stubbed_serve["sandbox_mode"] == "strict"
+    assert stubbed_serve["sandbox_network"] == "off"
+
+
+def test_code_mode_and_network_are_passed_to_server(stubbed_serve):
+    result = click.testing.CliRunner().invoke(
+        command,
+        [
+            "--model",
+            "test",
+            "--sandbox",
+            "auto",
+            "--sandbox-mode",
+            "code",
+            "--sandbox-network",
+            "on",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert stubbed_serve["sandbox_mode"] == "code"
+    assert stubbed_serve["sandbox_network"] == "on"
+
+
+def test_code_mode_and_network_can_be_configured_from_environment(stubbed_serve, monkeypatch):
+    monkeypatch.setenv("NOOA_ACP_SANDBOX", "auto")
+    monkeypatch.setenv("NOOA_ACP_SANDBOX_MODE", "code")
+    monkeypatch.setenv("NOOA_ACP_SANDBOX_NETWORK", "on")
+    result = click.testing.CliRunner().invoke(command, ["--model", "test"])
+    assert result.exit_code == 0, result.output
+    assert stubbed_serve["sandbox_mode"] == "code"
+    assert stubbed_serve["sandbox_network"] == "on"
+
+
+@pytest.mark.parametrize("sandbox,mode", [("off", "code"), ("off", "strict"), ("auto", "strict")])
+def test_network_on_rejects_disabled_sandbox_and_strict_mode(stubbed_serve, sandbox, mode):
+    result = click.testing.CliRunner().invoke(
+        command,
+        [
+            "--model",
+            "test",
+            "--sandbox",
+            sandbox,
+            "--sandbox-mode",
+            mode,
+            "--sandbox-network",
+            "on",
+        ],
+    )
+    assert result.exit_code == 2
+    assert "requires an enabled sandbox in code mode" in result.output
+    assert "llm_factory" not in stubbed_serve
+
+
+def test_sandbox_can_be_enabled_from_environment(stubbed_serve, monkeypatch):
+    monkeypatch.setenv("NOOA_ACP_SANDBOX", "auto")
+    result = click.testing.CliRunner().invoke(command, ["--model", "test"])
+    assert result.exit_code == 0, result.output
+    assert stubbed_serve["sandbox"] == "auto"
+
+
+def test_explicit_sandbox_flag_overrides_environment(stubbed_serve, monkeypatch):
+    monkeypatch.setenv("NOOA_ACP_SANDBOX", "auto")
+    result = click.testing.CliRunner().invoke(command, ["--model", "test", "--sandbox", "off"])
+    assert result.exit_code == 0, result.output
+    assert stubbed_serve["sandbox"] == "off"
 
 
 def _console_script() -> str:

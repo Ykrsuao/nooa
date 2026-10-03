@@ -58,6 +58,11 @@ def _read_text(path: Path) -> tuple[str, str]:
     return content, ending
 
 
+def _normalize_newlines(text: str) -> str:
+    """Use the same universal-newline representation as file reads."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 class FileWrite:
     """Result of a write/replace operation.
 
@@ -835,6 +840,8 @@ class ShellTools(Skill):
 
         A Match replaces its entire line region, not a substring within it.
         Supplying new with a Match is an error; use the path form for old -> new.
+        Search and replacement line endings are normalized; edits keep the
+        file's LF or CRLF style (mixed line endings become LF).
 
         Args:
             target: A Match or file path string.
@@ -852,7 +859,7 @@ class ShellTools(Skill):
                     "This guard prevents silently overwriting the whole matched region "
                     "(possibly the entire file) with the old text."
                 )
-            new_text = old_or_new
+            new_text = _normalize_newlines(old_or_new)
             resolved = Path(target.resolved_path)
             content, ending = _read_text(resolved)
             all_lines = content.splitlines(keepends=True)
@@ -888,7 +895,8 @@ class ShellTools(Skill):
                     "replace(path, old, new) requires 3 arguments. "
                     "Did you mean replace(match, new_text)?"
                 )
-            old_text = old_or_new
+            old_text = _normalize_newlines(old_or_new)
+            new = _normalize_newlines(new)
             resolved = self._resolve_path(target)
             content, ending = _read_text(resolved)
 

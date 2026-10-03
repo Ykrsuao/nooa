@@ -1,5 +1,14 @@
 # Native Windows Sandbox Status
 
+2026-10-03 update: `SandboxSession(SandboxConfig(...))` supports the shared code
+isolation profile on Windows and Linux. ACP selects it with
+`--sandbox auto --sandbox-mode code`: generated Python is isolated and ordinary
+shell/skills/MCP run on the trusted host, as in the original Linux model.
+Windows now has an explicit native `network` switch and a `host_tools` opt-in.
+Linux direct path grants and resource-limit units remain platform-specific and
+unsupported translations are rejected. See [current operation](acp-sandbox.md).
+The v1 acceptance history below describes its original, narrower scope.
+
 The native Windows sandbox v1 implementation and its documented acceptance are
 complete as of 2026-10-02. The supported entry is `WindowsSandboxSession`.
 See the [v1 delivery record](windows-v1-delivery-20261002.md) for delivery scope
@@ -22,8 +31,8 @@ retains failed cleanup resources for an explicit `aclose()` retry. Provisioning
 and cleanup drain filesystem work before propagating cancellation; slow storage
 can delay completion. See the [lifecycle contract](windows-sandbox-policy.md#internal-managed-policy-and-lifecycle).
 
-This does not add an `execution_backend="windows"` selector or translate Linux
-policy. The existing `SandboxedExecutor` and `SandboxConfig.start_method` remain
+This does not add an `execution_backend="windows"` selector. The existing
+direct `SandboxedExecutor` and `SandboxConfig.start_method` remain
 fork-only: `CodeActConfig(execution_backend="sandbox")` fails on native Windows
 with either `require` value. No sandbox request falls back to host execution.
 

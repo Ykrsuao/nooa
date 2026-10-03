@@ -3,6 +3,7 @@
 """Windows support for BashSession: finding MSYS2 bash, its PATH, and the Job Object."""
 
 import asyncio
+import shlex
 import socket
 import subprocess
 import sys
@@ -171,6 +172,68 @@ class TestProcessJob:
 
 
 class TestSessionProcessTree:
+    @pytest.mark.parametrize("failed_connection", [False, True])
+    async def test_startup_hook_child_belongs_to_job_and_dies_on_close(
+        self, monkeypatch, tmp_path, failed_connection
+    ):
+        child_file = tmp_path / "startup-child.pid"
+        startup = tmp_path / "startup.sh"
+        child_code = (
+            "import os, pathlib, time; "
+            f"pathlib.Path({str(child_file)!r}).write_text(str(os.getpid()), encoding='utf-8'); "
+            "time.sleep(60)"
+        )
+        startup.write_text(
+            f"{shlex.quote(Path(sys._base_executable).as_posix())} -I -S -c "
+            f"{shlex.quote(child_code)} &\n"
+            f"while [ ! -s {shlex.quote(child_file.as_posix())} ]; do sleep 0.01; done\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("BASH_ENV", startup.as_posix())
+        assign = _win_bash.ProcessJob.assign
+
+        def delayed_assign(job, pid):
+            # Model scheduling between CreateProcess and job assignment. Bash
+            # must not run BASH_ENV during this gap, even on a slow parent.
+            time.sleep(0.5)
+            assign(job, pid)
+
+        monkeypatch.setattr(_win_bash.ProcessJob, "assign", delayed_assign)
+        session = BashSession(cwd=tmp_path)
+        cleanup = _win_bash.ProcessJob()
+        child = None
+        members = []
+
+        async def fail_connection(*args):
+            nonlocal child, members
+            async with asyncio.timeout(5):
+                while not child_file.exists() or not child_file.read_text(encoding="utf-8"):
+                    await asyncio.sleep(0.01)
+            child = int(child_file.read_text(encoding="utf-8"))
+            assign(cleanup, child)
+            members = session._job.pids()
+            raise OSError("injected connection failure")
+
+        try:
+            if failed_connection:
+                monkeypatch.setattr(session, "_accept_control", fail_connection)
+                with pytest.raises(OSError, match="injected connection failure"):
+                    await session.start()
+            else:
+                await session.start()
+                child = int(child_file.read_text(encoding="utf-8"))
+                assign(cleanup, child)
+                assert session._job is not None
+                members = session._job.pids()
+            await session.close()
+            assert child in members, "BASH_ENV child escaped the session job during startup"
+            assert _wait_dead(child), "BASH_ENV child survived session.close()"
+        finally:
+            await session.close()
+            cleanup.close()
+            if child is not None:
+                assert _wait_dead(child)
+
     async def test_close_kills_background_jobs(self, tmp_path):
         s = BashSession(cwd=tmp_path)
         await s.start()
@@ -194,6 +257,92 @@ class TestSessionProcessTree:
 
 
 class TestSessionStartup:
+    @pytest.mark.parametrize("stage", ["create_job", "assign", "resume"])
+    async def test_failed_job_launch_reaps_suspended_bash_before_startup_hook(
+        self, monkeypatch, tmp_path, stage
+    ):
+        marker = tmp_path / "hook-ran"
+        startup = tmp_path / "startup.sh"
+        startup.write_text(f"echo ran > {shlex.quote(marker.as_posix())}\n", encoding="utf-8")
+        monkeypatch.setenv("BASH_ENV", startup.as_posix())
+        session = BashSession(cwd=tmp_path)
+        processes = []
+        spawn = asyncio.create_subprocess_exec
+
+        async def record_process(*args, **kwargs):
+            process = await spawn(*args, **kwargs)
+            processes.append(process)
+            return process
+
+        def fail(*args):
+            raise OSError("injected launch failure")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", record_process)
+        try:
+            with monkeypatch.context() as patch:
+                if stage == "create_job":
+                    patch.setattr(_win_bash, "ProcessJob", fail)
+                elif stage == "assign":
+                    patch.setattr(_win_bash.ProcessJob, "assign", fail)
+                else:
+                    patch.setattr(_win_bash, "resume_suspended_process", fail)
+                with pytest.raises(OSError, match="injected launch failure"):
+                    await session.start()
+            assert session._process is None
+            assert session._job is None
+            assert not session._started
+            assert processes[0].returncode is not None
+            assert processes[0].stdin.is_closing()
+            assert not marker.exists(), "BASH_ENV ran before job ownership was established"
+
+            assert await session.run("echo recovered") == ("recovered", "", 0)
+            assert marker.read_text(encoding="utf-8").strip() == "ran"
+        finally:
+            await session.close()
+            for process in processes:
+                if process.returncode is None:
+                    process.kill()
+                await process.communicate()
+
+    async def test_repeated_startup_cancellation_finishes_cleanup(self, monkeypatch, tmp_path):
+        session = BashSession(cwd=tmp_path)
+        connecting = asyncio.Event()
+        closing = asyncio.Event()
+        release = asyncio.Event()
+        close = session._close_impl
+
+        async def wait_for_connection(*args):
+            connecting.set()
+            await asyncio.Future()
+
+        async def delayed_close():
+            closing.set()
+            await release.wait()
+            await close()
+
+        monkeypatch.setattr(session, "_accept_control", wait_for_connection)
+        monkeypatch.setattr(session, "_close_impl", delayed_close)
+        task = asyncio.create_task(session.start())
+        try:
+            await asyncio.wait_for(connecting.wait(), timeout=5)
+            process = session._process
+            task.cancel()
+            await asyncio.wait_for(closing.wait(), timeout=5)
+            task.cancel()
+            await asyncio.sleep(0)
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert process.returncode is not None
+            assert process.stdin.is_closing()
+            assert session._process is None
+            assert session._job is None
+        finally:
+            release.set()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            await session.close()
+
     @pytest.mark.parametrize("error", [TimeoutError, asyncio.CancelledError, OSError])
     async def test_failed_connection_reaps_process_and_allows_retry(
         self, monkeypatch, tmp_path, error

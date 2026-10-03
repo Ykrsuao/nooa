@@ -563,7 +563,8 @@ convert = native._fn(native._security, "ConvertStringSidToSidW", ctypes.c_int,
 native._check(convert({lpac._profile.sid_text!r}, ctypes.byref(sid)))
 owner = _AppContainerPython.__new__(_AppContainerPython)
 owner._profile = SimpleNamespace(_created=True, sid=sid,
-                                registry_read_sid=native._registry_read_sid())
+                                registry_read_sid=native._registry_read_sid(),
+                                network_capability_sids=())
 owner._lock = threading.RLock()
 owner._closed = False
 owner.runtime = Path({str(lpac.runtime)!r})

@@ -7,6 +7,7 @@ from __future__ import annotations
 import ctypes
 import sys
 import uuid
+from collections.abc import Callable
 from ctypes import wintypes as w
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -202,13 +203,13 @@ def _current_user_sid() -> str:
         CloseHandle(token)
 
 
-def _registry_read_sid():
+def _capability_sid(name: str):
     groups, capabilities = _SidArray(), _SidArray()
     group_count, capability_count = w.DWORD(), w.DWORD()
     try:
         _check(
             _DeriveCapability(
-                "registryRead",
+                name,
                 ctypes.byref(groups),
                 ctypes.byref(group_count),
                 ctypes.byref(capabilities),
@@ -216,7 +217,7 @@ def _registry_read_sid():
             )
         )
         if capability_count.value != 1:
-            raise OSError("registryRead must resolve to exactly one capability SID")
+            raise OSError(f"{name} must resolve to exactly one capability SID")
         size = _GetLengthSid(capabilities[0])
         _check(size)
         return ctypes.create_string_buffer(ctypes.string_at(capabilities[0], size))
@@ -228,10 +229,22 @@ def _registry_read_sid():
                 LocalFree(ctypes.cast(values, _ptr))
 
 
+def _registry_read_sid():
+    return _capability_sid("registryRead")
+
+
 class Profile:
     """Own exactly one newly-created profile; never reuse/delete another profile."""
 
-    def __init__(self, *, name: str | None = None):
+    def __init__(
+        self,
+        *,
+        name: str | None = None,
+        network: bool = False,
+        _retain: Callable[[Profile], None] | None = None,
+    ):
+        if type(network) is not bool:
+            raise TypeError("network must be a bool")
         if name is not None and (
             not isinstance(name, str)
             or not name.startswith("nooa.lpac.")
@@ -242,20 +255,35 @@ class Profile:
         self.name = name if name is not None else "nooa.lpac." + uuid.uuid4().hex
         self.sid = _ptr()
         self._created = False
-        _hresult(
-            _CreateProfile(
-                self.name, self.name, "NOOA isolated Python", None, 0, ctypes.byref(self.sid)
-            )
-        )
-        self._created = True
+        # A runtime must own this close-safe object before native allocation;
+        # failed SID initialization and failed rollback must not lose it.
+        if _retain is not None:
+            _retain(self)
         try:
+            _hresult(
+                _CreateProfile(
+                    self.name, self.name, "NOOA isolated Python", None, 0, ctypes.byref(self.sid)
+                )
+            )
+            self._created = True
             self.sid_text = _sid_text(self.sid)
             self.user_sid = _current_user_sid()
             # LPAC needs OS registry ACEs for DLL initialization. This does not
             # grant network access or access to arbitrary user registry keys.
             self.registry_read_sid = _registry_read_sid()
+            self.network_capability_sids = (
+                tuple(
+                    _capability_sid(name)
+                    for name in ("internetClient", "privateNetworkClientServer")
+                )
+                if network
+                else ()
+            )
         except BaseException:
-            self.close()
+            # Retaining runtimes own rollback, including its cleanup order and
+            # retries. Standalone callers still receive automatic rollback.
+            if _retain is None:
+                self.close()
             raise
 
     def close(self):
@@ -361,27 +389,39 @@ class SuspendedProcess:
         handles: list[int],
         *,
         job: ProcessJob,
+        allow_child_processes: bool = False,
+        command_line: str | None = None,
     ):
         import subprocess
 
+        if type(allow_child_processes) is not bool:
+            raise TypeError("allow_child_processes must be a bool")
+        if command_line is not None and (
+            not isinstance(command_line, str) or "\0" in command_line or len(command_line) >= 32767
+        ):
+            raise ValueError("invalid Windows command line")
         if not profile._created:
             raise RuntimeError("AppContainer profile is closed")
         if len(handles) != 3 or len(set(handles)) != 3:
             raise ValueError("exactly three distinct standard handles are required")
         self._info = _ProcessInfo()
-        capability = _SidAndAttributes(ctypes.cast(profile.registry_read_sid, _ptr), 4)
+        sids = (profile.registry_read_sid, *profile.network_capability_sids)
+        capabilities = (_SidAndAttributes * len(sids))(
+            *(_SidAndAttributes(ctypes.cast(sid, _ptr), 4) for sid in sids)
+        )
         attributes = [
             (
                 0x20009,
-                _Capabilities(profile.sid, ctypes.cast(ctypes.pointer(capability), _ptr), 1, 0),
+                _Capabilities(profile.sid, ctypes.cast(capabilities, _ptr), len(capabilities), 0),
             ),
             (0x20002, (w.HANDLE * 3)(*handles)),
             (0x2000F, w.DWORD(1)),  # LPAC: opt out of ALL APPLICATION PACKAGES
-            (0x2000E, w.DWORD(1)),  # token-level child process restriction
             # Kernel assignment is part of creation, even if the parent dies
             # before CreateProcessW returns. Never retry without this attribute.
             (_PROC_THREAD_ATTRIBUTE_JOB_LIST, (w.HANDLE * 1)(job._creation_handle())),
         ]
+        if not allow_child_processes:
+            attributes.append((0x2000E, w.DWORD(1)))  # token-level child process restriction
         size = _size()
         _InitializeAttributes(None, len(attributes), 0, ctypes.byref(size))
         if ctypes.get_last_error() != 122:
@@ -400,7 +440,9 @@ class SuspendedProcess:
             startup.info.dwFlags = 0x100  # STARTF_USESTDHANDLES
             startup.info.hStdInput, startup.info.hStdOutput, startup.info.hStdError = handles
             startup.attributes = ctypes.cast(buffer, _ptr)
-            command = ctypes.create_unicode_buffer(subprocess.list2cmdline(argv))
+            command = ctypes.create_unicode_buffer(
+                subprocess.list2cmdline(argv) if command_line is None else command_line
+            )
             environment = ctypes.create_unicode_buffer(
                 "\0".join(f"{key}={value}" for key, value in sorted(env.items())) + "\0\0"
             )

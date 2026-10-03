@@ -88,7 +88,7 @@ async def test_public_entry_owns_lifecycle_without_a_release_switch(
         await owner.__aenter__()
 
 
-@pytest.mark.parametrize("settings", [{"require": False}, {"network": True}, {"max_memory_mb": 1}])
+@pytest.mark.parametrize("settings", [{"require": False}, {"max_memory_mb": 1}])
 def test_public_windows_policy_does_not_translate_linux_fields(settings):
     from nooa.runtime.sandbox.windows import WindowsSandboxPolicy
 

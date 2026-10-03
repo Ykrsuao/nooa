@@ -37,6 +37,12 @@ class _LpacExecutor(_SpawnExecutor):
     (including startup) and lifetime user-mode CPU seconds, not Linux headroom
     or per-cell budgets. A replacement worker starts a new job with the same
     limits; these are not session-wide quotas. Zero disables an optional limit.
+
+    ``host_tools=True`` explicitly replaces exact grants with the supplied live
+    Agent, matching Linux's host-side self.* tools. Those tools run outside LPAC
+    and retain their full effects. Their importable return values may be pickled
+    into the child; child-to-parent requests remain bounded msgpack with declared
+    data types. This is code-cell isolation, not isolation of the Agent's tools.
     """
 
     def __init__(
@@ -44,6 +50,8 @@ class _LpacExecutor(_SpawnExecutor):
         runtime: _AppContainerPython,
         *,
         tools: Mapping[str, Callable[..., Any]] | None = None,
+        host_tools: bool = False,
+        live_agent: Any = None,
         tool_policies: Mapping[str, _ToolPolicy] | None = None,
         framework_builtins: dict[str, Any] | None = None,
         module_globals: dict[str, Any] | None = None,
@@ -54,6 +62,7 @@ class _LpacExecutor(_SpawnExecutor):
         error_tail: int | None = None,
         cell_timeout: float | None = 10,
         startup_timeout_s: float = 30,
+        timeout_grace_s: float = 0,
         broker_timeout_s: float = 30,
         recovery: Literal["restart_empty", "disabled"] = "restart_empty",
         frame_timeout_s: float = 5,
@@ -65,6 +74,16 @@ class _LpacExecutor(_SpawnExecutor):
         if not math.isfinite(frame_timeout_s) or frame_timeout_s <= 0:
             raise ValueError("frame_timeout_s must be finite and positive")
         tools = dict(tools or {})
+        if type(host_tools) is not bool:
+            raise TypeError("host_tools must be a boolean")
+        if host_tools:
+            if live_agent is None:
+                raise ValueError("host_tools requires an explicit live_agent")
+            if tools or tool_policies:
+                raise ValueError("host_tools cannot be combined with exact tool grants")
+        elif live_agent is not None:
+            raise ValueError("live_agent requires host_tools=True")
+        self._host_tools = host_tools
         callbacks = dict(framework_builtins or {})
         for name, callback in tools.items():
             if not isinstance(name, str) or not name.isidentifier() or name.startswith("_"):
@@ -99,8 +118,10 @@ class _LpacExecutor(_SpawnExecutor):
             ),
         }
         self._data_types = _declared_types(data_types)
+        if host_tools:
+            self._data_types.update(wire.agent_types(live_agent))
         self._tool_docs = None
-        if tool_introspection:
+        if tool_introspection and not host_tools:
             from nooa.agentdoc import doc
 
             self._tool_docs = {name: doc(callback) for name, callback in tools.items()}
@@ -110,7 +131,7 @@ class _LpacExecutor(_SpawnExecutor):
         # Reuse only the internal IPC/cell lifecycle. _prepare_backend and
         # _start_worker below replace its unrestricted multiprocessing launcher.
         super().__init__(
-            SimpleNamespace(**tools),
+            live_agent if host_tools else SimpleNamespace(**tools),
             unsafe_no_isolation=True,
             module_globals=module_globals or {},
             framework_builtins=callbacks,
@@ -119,6 +140,7 @@ class _LpacExecutor(_SpawnExecutor):
             error_tail=error_tail,
             cell_timeout=cell_timeout,
             startup_timeout_s=startup_timeout_s,
+            timeout_grace_s=timeout_grace_s,
             broker_timeout_s=broker_timeout_s,
             recovery=recovery,
             memory_limit_bytes=memory_limit_bytes,
@@ -170,6 +192,15 @@ class _LpacExecutor(_SpawnExecutor):
         # tool arguments. Neither dunder traversal nor attr/setattr/iter on live
         # host objects is a capability implied by granting a function.
         root, kind, path = msg.get("root", "agent"), msg.get("kind"), msg.get("path")
+        if self._host_tools and root == "agent":
+            # This opt-in grants the live Agent's effects, matching Linux self.*.
+            # Only dispatch changes: untrusted requests still use the bounded
+            # msgpack envelope and declared data constructors in the base broker.
+            return super()._decode_tool_call(msg)
+        if self._host_tools and root == "introspection":
+            if kind != "call" or path not in (["doc"], ["methods"], ["variables"]):
+                raise CellSerializationError("LPAC introspection operation is not granted")
+            return super()._decode_tool_call(msg)
         if root == "introspection" and self._tool_docs is not None:
             if kind != "call" or path not in (["doc"], ["methods"], ["variables"]):
                 raise CellSerializationError("LPAC introspection operation is not granted")
@@ -207,6 +238,8 @@ class _LpacExecutor(_SpawnExecutor):
         )
 
     def _introspect(self, fn, path, *args, **kwargs):
+        if self._host_tools:
+            return super()._introspect(fn, path, *args, **kwargs)
         if self._tool_docs is None or not self._can_describe(path) or args or kwargs:
             raise CellSerializationError("LPAC introspection requires an exact granted path")
         if fn.__name__ == "variables":
@@ -216,6 +249,11 @@ class _LpacExecutor(_SpawnExecutor):
         return "\n\n".join(self._tool_docs.values())
 
     async def _dispatch_tool_call(self, msg):
+        if self._host_tools:
+            # Parent-produced values are trusted, as in the Linux fork backend.
+            # Preserve ShellResult/Match and other importable tool return types
+            # through parent->worker pickle; never enable pickle in reverse.
+            return await super()._dispatch_tool_call(msg)
         if msg.get("root", "agent") == "agent" and msg.get("kind") == "call":
             name = msg["path"][0]
             if name in self._tool_policies:

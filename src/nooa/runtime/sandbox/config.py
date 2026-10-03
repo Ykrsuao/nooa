@@ -41,11 +41,15 @@ class SandboxConfig(BaseModel):
 
     Defaults are the *safe, minimal* posture: filesystem confined (read-only
     system paths plus an optional read-write workspace), network off. Memory
-    and CPU caps are opt-in (``0`` disables them). All fields are ignored unless
-    ``CodeActConfig.execution_backend == "sandbox"``.
+    and CPU caps are opt-in (``0`` disables them). The Linux executor uses these
+    fields when ``CodeActConfig.execution_backend == "sandbox"``. The managed
+    ``SandboxSession`` also accepts this policy on Windows for shared settings;
+    unsupported Linux path grants and resource semantics are rejected there.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid", revalidate_instances="always")
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", revalidate_instances="always", allow_inf_nan=False
+    )
 
     # --- guardrail 3: filesystem ------------------------------------------
     filesystem: bool = Field(

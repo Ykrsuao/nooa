@@ -46,6 +46,7 @@ class _SpawnExecutor(SandboxedExecutor):
         restrictions: Any = None,
         cell_timeout: float | None = 10,
         startup_timeout_s: float = 30,
+        timeout_grace_s: float = 0,
         broker_timeout_s: float = 300,
         recovery: Literal["restart_empty", "disabled"] = "restart_empty",
         memory_limit_bytes: int = 0,
@@ -66,6 +67,10 @@ class _SpawnExecutor(SandboxedExecutor):
             raise ValueError("cell_timeout must be None or finite and positive")
         if not math.isfinite(broker_timeout_s) or broker_timeout_s < 0:
             raise ValueError("broker_timeout_s must be finite and nonnegative")
+        if type(timeout_grace_s) not in (int, float) or not math.isfinite(timeout_grace_s):
+            raise ValueError("timeout_grace_s must be finite and nonnegative")
+        if timeout_grace_s < 0:
+            raise ValueError("timeout_grace_s must be finite and nonnegative")
         super().__init__(
             agent,
             SandboxConfig(
@@ -73,7 +78,7 @@ class _SpawnExecutor(SandboxedExecutor):
                 network=True,
                 require=False,
                 context_block=False,
-                timeout_grace_s=0,
+                timeout_grace_s=timeout_grace_s,
                 broker_timeout_s=broker_timeout_s,
                 recovery=recovery,
             ),
@@ -242,7 +247,11 @@ class _SpawnExecutor(SandboxedExecutor):
                     )
                     return self._recv_until_result(
                         req_id,
-                        self._cell_timeout,
+                        (
+                            self._cell_timeout + self._config.timeout_grace_s
+                            if self._cell_timeout is not None
+                            else None
+                        ),
                         loop,
                         conn=conn,
                         proc=proc,
@@ -318,7 +327,8 @@ class _SpawnExecutor(SandboxedExecutor):
             self._io_task = None
         tasks = list(self._tool_tasks)
         for task in tasks:
-            task.cancel()
+            if not task.cancelling():
+                task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         if self._conn is not None:
             self._conn.close()

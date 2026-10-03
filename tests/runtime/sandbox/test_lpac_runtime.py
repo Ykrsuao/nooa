@@ -1,9 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Installed dependency closure and private staging, without launching workers."""
+"""Dependency closure, private staging, and native CLI import acceptance."""
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import sys
 import threading
@@ -176,7 +177,149 @@ def test_editable_dependency_is_refused_even_with_manifested_source(distribution
         staging._stage_packages(tmp_path / "packages", ("example",))
 
 
-@pytest.mark.parametrize("path", ["os.py", "JSON/__init__.py", "nooa/extra.py"])
+@pytest.fixture
+def editable_cli(distributions, tmp_path, monkeypatch):
+    package = tmp_path / "checkout/packages/nooa-cli/src/nooa_cli"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text(
+        "raise RuntimeError('package must not execute while staging')\n", encoding="utf-8"
+    )
+    distributions(
+        "nooa-cli",
+        editable=True,
+        files={
+            "_editable_nooa_cli.pth": "raise RuntimeError('install hook must not execute')\n",
+            "nooa_cli-1.dist-info/METADATA": "Name: nooa-cli\n",
+        },
+    )
+    find = importlib.util.find_spec
+
+    def find_spec(name, package=None):
+        if name == "nooa_cli":
+            source = tmp_path / "checkout/packages/nooa-cli/src/nooa_cli"
+            return SimpleNamespace(
+                origin=str(source / "__init__.py"),
+                submodule_search_locations=[str(source)],
+            )
+        return find(name, package)
+
+    monkeypatch.setattr(importlib.util, "find_spec", find_spec)
+    return package
+
+
+def test_editable_cli_stages_only_python_inside_its_installed_package(editable_cli, tmp_path):
+    files = {
+        "coding/__init__.py": "",
+        "coding/repositories.py": "class Repo: pass\n",
+        "coding/repositories.pyi": "class Repo: ...\n",
+        "coding/future_tool.py": "VALUE = 1\n",
+        "coding/.env": "synthetic package secret",
+        "coding/settings.yaml": "private: package config",
+        "coding/template.txt": "not Python",
+        "coding/__pycache__/cached.py": "not source",
+        ".hidden/secret.py": "not public source",
+        "coding/.hidden.py": "not public source",
+    }
+    for name, contents in files.items():
+        target = editable_cli / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(contents, encoding="utf-8")
+    (editable_cli.parent / ".env").write_text("synthetic adjacent secret", encoding="utf-8")
+    (editable_cli.parent / "settings.py").write_text("USER_CONFIG = True", encoding="utf-8")
+    (tmp_path / "checkout/.env").write_text("synthetic checkout secret", encoding="utf-8")
+
+    destination = tmp_path / "packages"
+    staging._stage_packages(destination, ("nooa-cli",))
+
+    assert sorted(
+        path.relative_to(destination).as_posix()
+        for path in destination.rglob("*")
+        if path.is_file()
+    ) == [
+        "nooa/__init__.py",
+        "nooa_cli-1.dist-info/METADATA",
+        "nooa_cli/__init__.py",
+        "nooa_cli/coding/__init__.py",
+        "nooa_cli/coding/future_tool.py",
+        "nooa_cli/coding/repositories.py",
+        "nooa_cli/coding/repositories.pyi",
+    ]
+
+
+def test_cli_wheel_keeps_manifest_resources_without_source_discovery(
+    distributions, tmp_path, monkeypatch
+):
+    distributions(
+        "nooa-cli",
+        files={"nooa_cli/__init__.py": "", "nooa_cli/template.txt": "wheel resource"},
+    )
+
+    def unexpected_spec(*args, **kwargs):
+        pytest.fail("a complete wheel must use its manifest, not source discovery")
+
+    monkeypatch.setattr(importlib.util, "find_spec", unexpected_spec)
+    destination = tmp_path / "packages"
+    staging._stage_packages(destination, ("nooa-cli",))
+    assert (destination / "nooa_cli/template.txt").read_text(encoding="utf-8") == "wheel resource"
+
+
+def test_editable_cli_is_not_staged_when_not_requested(editable_cli, tmp_path):
+    destination = tmp_path / "packages"
+    staging._stage_packages(destination)
+    assert not (destination / "nooa_cli").exists()
+
+
+def test_first_party_exception_does_not_admit_similarly_named_editables(distributions, tmp_path):
+    distributions("nooa-cli-addon", editable=True)
+    with pytest.raises(ValueError, match="editable distribution is unsupported: nooa-cli-addon"):
+        staging._stage_packages(tmp_path / "packages", ("nooa-cli-addon",))
+
+
+@pytest.mark.parametrize("nested", [False, True], ids=["package-root", "nested-package"])
+def test_editable_cli_source_reparse_points_are_rejected(editable_cli, tmp_path, nested):
+    import _winapi
+
+    if nested:
+        external = tmp_path / "external"
+        external.mkdir()
+        (external / "private.py").write_text("PRIVATE = True", encoding="utf-8")
+        target = editable_cli / "linked"
+    else:
+        external = editable_cli.with_name("real_cli")
+        editable_cli.rename(external)
+        target = editable_cli
+    _winapi.CreateJunction(str(external), str(target))
+    with pytest.raises(ValueError, match="source|reparse"):
+        staging._stage_packages(tmp_path / "packages", ("nooa-cli",))
+
+
+@pytest.mark.timeout(180)
+def test_installed_cli_staging_boots_coding_agent_and_repo_results():
+    from nooa.runtime.sandbox._appcontainer import _AppContainerPython
+
+    source = """
+import json
+from nooa_cli.coding.agent import CodingAgent
+from nooa_cli.tools.repo_tools import RepoMapResult
+result = RepoMapResult(root='workspace', summary='staged', num_files=1)
+print(json.dumps({'agent': CodingAgent.__module__, 'result': result.summary}))
+"""
+    with _AppContainerPython() as runtime:
+        destination = staging.stage_framework(runtime, application_requirements=("nooa-cli",))
+        assert (destination / "nooa_cli/coding/agent.py").is_file()
+        assert not list(destination.glob("*.pth"))
+        # The standalone launcher does not automatically add staged packages.
+        result = runtime.run(
+            f"import sys; sys.path.insert(0, {str(destination)!r})\n" + source,
+            timeout_s=60,
+        )
+        assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
+        assert json.loads(result.stdout) == {"agent": "nooa_cli.coding.agent", "result": "staged"}
+
+
+@pytest.mark.parametrize(
+    "path", ["os.py", "JSON/__init__.py", "nooa/extra.py", "nooa_cli/extra.py"]
+)
 def test_third_party_cannot_shadow_runtime(distributions, tmp_path, path):
     distributions("example", files={path: ""})
     with pytest.raises(ValueError, match="shadows"):

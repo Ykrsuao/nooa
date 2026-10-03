@@ -143,6 +143,51 @@ async def test_unknown_grants_missing_files_and_directories_do_not_create(tmp_pa
     assert not list(tmp_path.iterdir())
 
 
+async def test_explicit_create_never_overwrites_and_update_rejects_stale_content(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "nested").mkdir()
+    before = _security(root)
+    async with _DirectoryBroker({"data": _DirectoryGrant(root, writable=True)}) as broker:
+        assert await broker.create("data", "nested/new.txt", b"created") == 7
+        with pytest.raises(FileExistsError):
+            await broker.create("data", "nested/new.txt", b"overwrite")
+        assert await broker.read("data", "nested/new.txt") == b"created"
+        with pytest.raises(ValueError, match="changed since"):
+            await broker.update("data", "nested/new.txt", b"stale", b"bad")
+        assert await broker.update("data", "nested/new.txt", b"created", b"short") == 5
+        assert await broker.read("data", "nested/new.txt") == b"short"
+        with pytest.raises(OSError):
+            await broker.create("data", "missing/new.txt", b"no")
+    assert _security(root) == before
+    assert not (root / "missing").exists()
+
+
+async def test_create_and_update_enforce_grants_limits_paths_and_links(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.write_bytes(b"private")
+    os.link(outside, root / "alias")
+    async with _DirectoryBroker(
+        {"read": _DirectoryGrant(root), "write": _DirectoryGrant(root, writable=True)},
+        max_file_bytes=8,
+    ) as broker:
+        with pytest.raises(PermissionError, match="read-only"):
+            await broker.create("read", "new", b"data")
+        with pytest.raises(ValueError, match="max_file_bytes"):
+            await broker.create("write", "new", b"too large")
+        for path in ("../outside", "sub/../outside", "alias:stream", "C:/outside", "NUL"):
+            with pytest.raises(ValueError):
+                await broker.create("write", path, b"bad")
+        with pytest.raises(OSError):
+            await broker.create("write", "alias", b"bad")
+        with pytest.raises(ValueError, match="hard-link"):
+            await broker.update("write", "alias", b"private", b"bad")
+    assert outside.read_bytes() == b"private"
+    assert sorted(p.name for p in root.iterdir()) == ["alias"]
+
+
 async def test_file_and_listing_limits_fail_without_partial_output(tmp_path):
     (tmp_path / "large").write_bytes(b"oversized")
     (tmp_path / "small").write_bytes(b"old")

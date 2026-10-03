@@ -48,6 +48,7 @@ class _WindowsSandboxPolicy:
     tools: tuple[str, ...] = ()
     tool_policies: Mapping[str, _ToolPolicy] = field(default_factory=dict)
     cell_timeout_s: float | None = 10
+    timeout_grace_s: float = 0
     startup_timeout_s: float = 60
     broker_timeout_s: float = 30
     frame_timeout_s: float = 5
@@ -59,8 +60,23 @@ class _WindowsSandboxPolicy:
     max_response_bytes: int = 1024 * 1024
     recovery: Literal["restart_empty", "disabled"] = "restart_empty"
     recovery_directory: Path | None = None
+    # Native AppContainer internet/private-network capabilities. Windows loopback
+    # restrictions still apply; this never installs a system loopback exemption.
+    network: bool = False
+    # Opt-in upstream semantics: Agent methods and fields live in the trusted
+    # host, outside the cell's filesystem/network policy.
+    host_tools: bool = False
+    context_block: bool = True
 
     def __post_init__(self):
+        if type(self.network) is not bool:
+            raise TypeError("network must be a bool")
+        if type(self.host_tools) is not bool or type(self.context_block) is not bool:
+            raise TypeError("host_tools and context_block must be bools")
+        if self.host_tools and (
+            self.tools or self.tool_policies or self.files or self.directories or self.https
+        ):
+            raise ValueError("host_tools cannot be combined with exact tool or broker grants")
         for name in ("inputs", "files", "directories", "https", "tool_policies"):
             value = getattr(self, name)
             if not isinstance(value, Mapping):
@@ -116,6 +132,7 @@ class _WindowsSandboxPolicy:
                 raise TypeError("tool policies must be synchronous predicates")
         for name in (
             "cell_timeout_s",
+            "timeout_grace_s",
             "startup_timeout_s",
             "broker_timeout_s",
             "frame_timeout_s",
@@ -128,9 +145,12 @@ class _WindowsSandboxPolicy:
                 type(value) not in (int, float)
                 or not math.isfinite(value)
                 or value < 0
-                or (value == 0 and name != "broker_timeout_s")
+                or (value == 0 and name not in ("broker_timeout_s", "timeout_grace_s"))
             ):
-                raise ValueError(f"{name} must be finite and positive (broker zero is unbounded)")
+                raise ValueError(
+                    f"{name} must be finite and positive "
+                    "(broker zero is unbounded; grace zero disables extra time)"
+                )
         for name, minimum, maximum in (
             ("memory_limit_bytes", 0, 2**63 - 1),
             ("cpu_time_limit_s", 0, (2**63 - 1) // 10_000_000),

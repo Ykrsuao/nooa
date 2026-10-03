@@ -27,6 +27,7 @@ def _open_native_file(
     *,
     directory: bool = False,
     root_handle: int | None = None,
+    create: bool = False,
 ) -> int:
     """Reject reparse traversal during the kernel open, before any target is accessed."""
     import ctypes
@@ -50,6 +51,8 @@ def _open_native_file(
     class IoStatusBlock(ctypes.Structure):
         _fields_ = [("StatusOrPointer", ctypes.c_void_p), ("Information", ctypes.c_size_t)]
 
+    if create and (not writable or directory or root_handle is None):
+        raise ValueError("file creation requires a writable leaf under a pinned directory")
     nt_path = str(path) if root_handle is not None else "\\??\\" + str(path)
     length = len(nt_path.encode("utf-16-le"))
     if length + 2 > 65535:
@@ -65,7 +68,7 @@ def _open_native_file(
         None,  # OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE
     )
     ntdll = ctypes.WinDLL("ntdll")
-    create = _fn(
+    native_create = _fn(
         ntdll,
         "NtCreateFile",
         ctypes.c_long,
@@ -83,15 +86,15 @@ def _open_native_file(
     )
     error_code = _fn(ntdll, "RtlNtStatusToDosError", w.ULONG, ctypes.c_long)
     handle, status_block = w.HANDLE(), IoStatusBlock()
-    status = create(
+    status = native_create(
         ctypes.byref(handle),
-        0x80000000 | 0x100000 | (0x40000000 if writable else 0),
+        0x80000000 | 0x100000 | (0x40000000 if writable else 0) | (0x10000 if create else 0),
         ctypes.byref(attributes),
         ctypes.byref(status_block),
         None,
         0,
         3 if directory else 1,  # Directory contents may change, but no rename/delete sharing.
-        1,
+        2 if create else 1,  # FILE_CREATE never replaces an existing object.
         (0x1 if directory else 0x40) | 0x20 | 0x00200000,
         None,
         0,  # Synchronous, open reparse itself; OBJ_DONT_REPARSE rejects traversal.
@@ -103,6 +106,26 @@ def _open_native_file(
     if handle.value is None:
         raise OSError("native file open returned no handle")
     return handle.value
+
+
+def _mark_created_file_for_deletion(handle: int) -> None:
+    """Roll back only a newly created file through its existing DELETE handle."""
+    import ctypes
+    from ctypes import wintypes as w
+
+    from nooa.runtime.sandbox._win_appcontainer import _check, _fn, _kernel
+
+    disposition = _fn(
+        _kernel,
+        "SetFileInformationByHandle",
+        w.BOOL,
+        w.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        w.DWORD,
+    )
+    delete = w.BOOL(True)
+    _check(disposition(handle, 4, ctypes.byref(delete), ctypes.sizeof(delete)))
 
 
 def _local_path(value: Path) -> Path:
@@ -161,7 +184,11 @@ def _verify_handle_path(handle: int, path: Path) -> None:
 
 
 def _open_pinned_file(
-    grant: _FileGrant, *, root_handle: int | None = None, reject_links: bool = False
+    grant: _FileGrant,
+    *,
+    root_handle: int | None = None,
+    reject_links: bool = False,
+    create: bool = False,
 ) -> int:
     """Open without truncation, validate that handle, then transfer ownership to an fd."""
     import msvcrt
@@ -169,13 +196,17 @@ def _open_pinned_file(
 
     from nooa.runtime.sandbox._win_appcontainer import CloseHandle, _fn, _kernel
 
+    if create and root_handle is None:
+        raise ValueError("file creation requires a pinned parent directory")
     path = _local_path(grant.path)
     file_type = _fn(_kernel, "GetFileType", w.DWORD, w.HANDLE)
     # Relative opens use only the final component under an already pinned parent.
     handle = (
         _open_native_file(path, grant.writable)
         if root_handle is None
-        else _open_native_file(Path(path.name), grant.writable, root_handle=root_handle)
+        else _open_native_file(
+            Path(path.name), grant.writable, root_handle=root_handle, create=create
+        )
     )
     try:
         if file_type(handle) != 1:  # FILE_TYPE_DISK
@@ -198,8 +229,16 @@ def _open_pinned_file(
             os.set_inheritable(fd, False)
             return fd
         except BaseException:
-            os.close(fd)
+            try:
+                if create:
+                    _mark_created_file_for_deletion(msvcrt.get_osfhandle(fd))
+            finally:
+                os.close(fd)
             raise
+    except BaseException:
+        if create and handle is not None:
+            _mark_created_file_for_deletion(handle)
+        raise
     finally:
         if handle is not None:
             CloseHandle(handle)

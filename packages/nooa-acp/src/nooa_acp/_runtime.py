@@ -18,6 +18,12 @@ from enum import StrEnum
 type CloseCallback[T] = Callable[[T], Awaitable[None] | None]
 
 
+def _observe_cleanup(task: asyncio.Task) -> None:
+    """Retrieve errors even when every request awaiting owned cleanup cancels."""
+    if not task.cancelled():
+        task.exception()
+
+
 class SessionBusyError(RuntimeError):
     """Raised when a second foreground turn targets a busy ACP session."""
 
@@ -85,7 +91,7 @@ class SessionRuntime[T]:
                 self._turn_claimed = False
 
     async def close(self) -> None:
-        """Wait for the foreground turn, release resources once, and mark closed."""
+        """Release resources, retaining failed ownership for a later close retry."""
         async with self._state_lock:
             if self._close_task is None:
                 if self._state is _RuntimeState.CLOSED:
@@ -95,6 +101,7 @@ class SessionRuntime[T]:
                     self._close_once(),
                     name=f"nooa-acp-close-{self.session_id}",
                 )
+                self._close_task.add_done_callback(_observe_cleanup)
             close_task = self._close_task
 
         # Cleanup belongs to the adapter, not to the lifetime of one request.
@@ -104,10 +111,18 @@ class SessionRuntime[T]:
         await self._turn_lock.acquire()
         try:
             await self._close_value()
-        finally:
-            self._turn_lock.release()
+        except BaseException:
+            async with self._state_lock:
+                # Keep the runtime closed to new turns, but retain its value
+                # and allow another cleanup attempt. Native resources may
+                # still exist after a failed close callback.
+                self._close_task = None
+            raise
+        else:
             async with self._state_lock:
                 self._state = _RuntimeState.CLOSED
+        finally:
+            self._turn_lock.release()
 
     async def _close_value(self) -> None:
         callback = self._close_callback
@@ -187,11 +202,7 @@ class SessionRuntimePool[T]:
                 )
                 self._remove_tasks[session_id] = remove_task
 
-                def _finished(done: asyncio.Task[T]) -> None:
-                    if not done.cancelled():
-                        done.exception()
-
-                remove_task.add_done_callback(_finished)
+                remove_task.add_done_callback(_observe_cleanup)
 
         # Teardown and unregistration belong to the adapter, not to the request
         # that happened to initiate them. Cancellation must not make the id
@@ -204,7 +215,7 @@ class SessionRuntimePool[T]:
         finally:
             async with self._lock:
                 self._remove_tasks.pop(session_id, None)
-                if self._runtimes.get(session_id) is runtime:
+                if runtime.is_closed and self._runtimes.get(session_id) is runtime:
                     del self._runtimes[session_id]
                     self._available.discard(session_id)
         return runtime.value
@@ -219,6 +230,7 @@ class SessionRuntimePool[T]:
                     self._close_all(runtimes),
                     name="nooa-acp-close-sessions",
                 )
+                self._close_task.add_done_callback(_observe_cleanup)
             close_task = self._close_task
 
         await asyncio.shield(close_task)
@@ -228,10 +240,15 @@ class SessionRuntimePool[T]:
             *(runtime.close() for runtime in runtimes),
             return_exceptions=True,
         )
-        async with self._lock:
-            self._runtimes.clear()
-            self._available.clear()
-
         failures = [result for result in results if isinstance(result, BaseException)]
+        async with self._lock:
+            for runtime in runtimes:
+                if runtime.is_closed and self._runtimes.get(runtime.session_id) is runtime:
+                    del self._runtimes[runtime.session_id]
+            self._available.clear()
+            if failures:
+                # A later adapter.close() retries only retained failed owners.
+                self._close_task = None
+
         if failures:
             raise BaseExceptionGroup("Failed to close one or more ACP sessions", failures)

@@ -1,11 +1,21 @@
 # Windows Sandbox Policy Contract
 
+ACP supports `--sandbox auto --sandbox-mode code` for the original Linux
+tool model: Python cells are isolated, while ordinary host shell, skills and
+MCP retain their permissions and persistent file changes. `--sandbox-mode strict`
+(the compatibility default) keeps restricted tools and disposable command
+snapshots. See [ACP native sandbox](acp-sandbox.md) for both modes, Linux
+differences and unsupported macOS behavior. The dated verification sections
+below retain the scope of their original runs.
+
 The explicit public `WindowsSandboxSession` provisions a native Windows LPAC
 runtime from a `WindowsSandboxPolicy` and supplies a strategy for Agent calls.
 This is separate from the fork-based `SandboxedExecutor` and its `SandboxConfig`:
 `CodeActConfig(execution_backend="sandbox")` still requires `fork` and fails on
 native Windows, including with `require=False` or every guard disabled. There
-is no `execution_backend="windows"` selector or Linux-policy translation.
+is no `execution_backend="windows"` selector. The managed `SandboxSession`
+entry now accepts the shared subset of `SandboxConfig`, separately from direct
+`CodeActConfig(execution_backend="sandbox")` construction.
 The ordinary `execution_backend="inprocess"` strategy remains host execution.
 
 The internal `_LpacCodeActStrategy` accepts only an unchanged `SandboxConfig()`
@@ -55,8 +65,8 @@ worker timeout recovery and explicit cleanup/retry remain part of v1. See the
 `WindowsSandboxSession`, `FileGrant`, `DirectoryGrant`, `HttpsEndpoint`,
 `WindowsSandboxCapabilities` and `probe_windows_sandbox`.
 The policy and grants are aliases of the existing validated native types; the
-session inherits the existing managed lifecycle. They are deliberately separate
-from `SandboxConfig`, not a translation of Linux permissions or resource units.
+session inherits the existing managed lifecycle. Native grants and resource
+units remain separate from Linux path permissions and rlimit semantics.
 
 Policy construction is available for configuration validation on any platform.
 Entry requires native Windows and provisions the owned runtime and brokers;
@@ -116,9 +126,14 @@ for completed results rather than treating prerequisite detection as acceptance.
 
 ## Fork SandboxConfig Field Mapping
 
-Every non-default `SandboxConfig` field is refused by the Windows strategy.
-"Candidate" below means a possible future mapping that still needs an explicit
-adapter and acceptance tests; it does not mean that mapping is available today.
+`SandboxSession(SandboxConfig(...))` now accepts network choice, timeout grace, broker timeout,
+recovery and context rendering on Windows. `tools=None` selects the trusted
+live-Agent tool model; explicit names retain exact callback grants. Generation
+`cell_timeout` is supplied at session construction. Linux-specific direct path
+grants, disabled filesystem/system guards and nondefault rlimit/polling
+semantics are rejected before provisioning, not silently reinterpreted.
+The low-level Windows strategy still consumes its internal sentinel config;
+the shared managed entry performs the supported translation.
 Unknown fields are refused by `CodeActConfig`, `SandboxConfig` and `FileRule`,
 including Windows-specific units or access flags passed to the Linux schema.
 
@@ -128,16 +143,16 @@ including Windows-specific units or access flags passed to the Linux schema.
 | `workspace=None` | Optional live host directory with read/write access; no workspace means no writable directory grant. | LPAC owns a disposable workspace with explicit `read` or `read_write` access. Public Windows sessions default to `read`; low-level internal launchers retain `read_write`. Neither mode is a live host directory. No adapter selects a mode from this field. |
 | `allow=()` | Direct file/subtree access under named host paths, read or read/write; explicit paths are required. | Staged inputs are snapshots. Exact-file and directory brokers expose bounded parent-side operations; the directory broker sees live host entries but does not grant direct worker filesystem access. Neither implements `FileRule` semantics. |
 | `system_paths=True` | Automatically allow read access to interpreter, installed packages and Linux system paths. | LPAC stages an explicit dependency closure and retains required OS access. It neither exposes the host installation nor supports disabling all runtime/system access. |
-| `network=False` | Deny worker internet sockets (`AF_INET`/`AF_INET6`); `True` permits them. | Direct socket denial is a candidate for `False`. Fixed-HTTPS broker requests are parent operations and cannot implement `True`. No network capability is added automatically. |
+| `network=False` | Deny worker internet sockets (`AF_INET`/`AF_INET6`); `True` permits them. | Default LPAC has no network capability. Explicit `True` adds native internet/private-network capabilities; Windows firewall/loopback and Python async-I/O constraints remain. Fixed-HTTPS brokers are separate parent operations. |
 | `max_memory_mb=0` | Extra address-space headroom in MiB above the worker baseline (`RLIMIT_AS`). Zero disables the cap. | Windows `memory_limit_bytes` uses absolute committed bytes, includes startup and applies to process and job. Multiplying MiB by 1024 squared is not a semantic translation. |
 | `max_cpu_seconds=0` | `RLIMIT_CPU` process CPU cap; zero disables it. | Job budgets count lifetime user-mode CPU, exclude kernel time and parent tools, and reset on replacement. Equal numeric seconds are not equivalent limits. |
 | `rss_poll_s=0.25` | Documented as an RSS-watchdog interval; the current executor uses it for parent IPC polling, without reading RSS in that loop. | Native committed-memory enforcement is not an RSS watchdog. LPAC inherits a fixed internal polling default but does not map this public field. |
-| `timeout_grace_s=2.0` | Extra grace beyond `CodeActConfig.cell_timeout` before parent termination. | Internal LPAC uses its cell deadline without this public grace. Any future adapter must define and test whether/how the grace applies. |
-| `broker_timeout_s=300.0` | Separate parent-tool deadline; zero means unbounded. | The internal executor and strategy accept an explicit broker deadline, defaulting to 30 seconds. The managed Windows policy passes its own deadline, including zero. This public field remains unmapped. |
+| `timeout_grace_s=2.0` | Extra grace beyond `CodeActConfig.cell_timeout` before parent termination. | Shared sessions pass the same grace to LPAC, including zero. The native Windows policy defaults to zero for compatibility. Host-tool time is excluded from the cell deadline on both hosts. |
+| `broker_timeout_s=300.0` | Separate parent-tool deadline; zero means unbounded. | Shared sessions pass this deadline unchanged, including zero. The direct native Windows policy retains its own 30-second default. |
 | `start_method="fork"` | Public multiprocessing start method, currently fork only. | Neither the unrestricted spawn experiment nor native LPAC launch is a public start method. Non-fork values are refused even if introduced by unvalidated `model_copy(update=...)`. |
-| `recovery="restart_empty"` | Restart a dead worker with empty globals, or refuse subsequent cells with `"disabled"`. | Internal worker/Agent recovery has corresponding modes and is a candidate. It does not roll back workspace files, tool effects or aggregate resource usage. It is separate from orphan-resource cleanup. |
-| `require=True` | Reject requested guards that cannot be enforced; existing supported fork paths can explicitly allow degraded guards with `False`. | `False` never authorizes a different public process backend or a Windows host-execution fallback. Both values fail when fork is unavailable. LPAC does not drop containment on request. |
-| `context_block=True` | Advertise sandbox constraints to the agent. | Public rendering describes Linux policy and host-object access that LPAC does not provide. Low-level internal LPAC suppresses it. Managed sessions supply a separate Windows block from their provisioned policy; this public field remains unmapped. |
+| `recovery="restart_empty"` | Restart a dead worker with empty globals, or refuse subsequent cells with `"disabled"`. | Shared sessions map these two recovery modes. Recovery does not roll back workspace files, tool effects or aggregate resource usage. It is separate from orphan-resource cleanup. |
+| `require=True` | Reject requested guards that cannot be enforced; existing supported fork paths can explicitly allow degraded guards with `False`. | Managed shared sessions require True and fail closed. Direct fork-executor construction remains Linux-only. LPAC does not drop containment or retry host execution. |
+| `context_block=True` | Advertise sandbox constraints to the agent. | Shared managed sessions honor this switch using the actual Windows policy and selected host-tool model, never a Linux path-rule description. |
 
 `CodeActConfig.cell_timeout` is outside `SandboxConfig`. The internal strategy
 already passes it to LPAC; `None` disables the cell deadline and a finite positive
@@ -159,9 +174,13 @@ This explicit entry is not selected by
 | `inputs` | Named immutable byte snapshots, not live paths. |
 | `files`, `directories` | Named existing-file and bounded live-directory broker grants, with explicit boolean write permission. Native path admission occurs during provisioning. |
 | `https` | Exact HTTPS URL/public IP grants. Verified TLS, GET only, no redirects or direct worker network capability. |
+| `network=False` | Default no direct networking. Explicit True grants native internetClient/privateNetworkClientServer capabilities without changing system loopback exemptions. |
+| `host_tools=False` | Default exact callbacks. Explicit True uses the trusted live Agent proxy, including nested shell/skills/MCP. Those operations execute on the host, outside cell restrictions; mutually exclusive with exact grants. |
+| `context_block=True` | Render the active native policy and tool trust model to the Agent. |
 | `tools`, `tool_policies` | Exact public Agent method names and optional synchronous argument predicates. These trusted callbacks retain their effects. |
 | `memory_limit_bytes=0`, `cpu_time_limit_s=0` | Absolute committed bytes and worker/job lifetime user-mode CPU seconds; zero disables the limit. Startup counts, parent callbacks do not, and a new worker receives a new budget. |
 | `cell_timeout_s=10`, `startup_timeout_s=60`, `broker_timeout_s=30`, `frame_timeout_s=5` | Separate deadlines. Cell `None` and broker zero disable their respective deadlines; all other values must be finite and positive. |
+| `timeout_grace_s=0` | Nonnegative finite grace before parent hard termination; shared `SandboxConfig` supplies its own value (default 2 seconds). Host-tool time does not consume the cell deadline. |
 | `https_timeout_s=10` | Separate positive finite whole-request deadline. |
 | `max_file_bytes=1048576`, `max_directory_entries=512`, `max_response_bytes=1048576` | Per-operation bounds; byte limits cannot exceed 4 MiB and listings cannot exceed 4096 entries. Not cumulative quotas. |
 | `recovery="restart_empty"` | Worker replacement with empty globals; `"disabled"` refuses replacement within a call. Neither rolls back files or callback effects. |
@@ -216,7 +235,11 @@ no policy context because its caller, not a managed policy, owns provisioning.
 The session is one-shot and bound to one event loop. Sequential calls have
 separate workers/globals but share the runtime identity and workspace files.
 Concurrent or nested calls fail explicitly instead of sharing workers or waiting
-on a reentrant lock. Callers must await every Agent call before context exit.
+on a reentrant lock, including calls on the same Agent: admission occurs before
+the Agent's generation lock. A Reflexion wrapper retains admission across its
+reflection and sequential base-strategy retries. Nested Agent calls still fail;
+only the wrapper's sequential strategy execution shares its reservation.
+Callers must await every Agent call before context exit.
 Closing during a call refuses cleanup and stops admission of new calls; await
 the existing call and retry `aclose()`.
 
@@ -243,7 +266,7 @@ named grants, native resource units, deadlines and recovery.
 
 | Input | Admission rule |
 | --- | --- |
-| Windows policy | Validated `WindowsSandboxPolicy`; no conversion from `SandboxConfig` or direct live-host `FileRule` grants. |
+| Windows policy | Validated `WindowsSandboxPolicy`; shared `SandboxConfig` accepts code-isolation settings but rejects direct live-host `FileRule` grants and incompatible Linux resource units. |
 | Generation options | Valid `CodeActConfig`; default public backend/policy and default CodeAct cell timeout are required as the no-public-policy sentinel. |
 | Copied configuration | Strictly revalidate fields and nested file grants; refuse unknown keys and unvalidated coercions before provisioning. |
 | Strategy overrides | Check again before creating the strategy; generation overrides cannot replace the owner's permissions or deadlines. |

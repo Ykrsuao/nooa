@@ -8,6 +8,7 @@ import json
 from collections.abc import Iterable
 
 from nooa.runtime.sandbox._windows_policy import _WindowsSandboxPolicy
+from nooa.runtime.sandbox.context_block import render_host_tools_block, render_value_transfer_block
 
 
 def _names(names: Iterable[str]) -> str:
@@ -29,8 +30,14 @@ def _render_windows_policy(policy: _WindowsSandboxPolicy) -> str:
         + ". These are not live host files.",
         "- Filesystem: no direct host path grants. OS-granted resources, including "
         "registryRead, remain available; this is not a claim that all OS resources are hidden.",
-        "- Network: direct internet sockets are denied. Parent tools are separate "
-        "trusted capabilities and may have host-side effects.",
+        "- Network: "
+        + (
+            "direct internet and private-network sockets are enabled through native "
+            "capabilities. Windows firewall and AppContainer loopback restrictions still apply. "
+            if policy.network
+            else "direct internet sockets are denied. "
+        )
+        + "Parent tools are separate trusted capabilities and may have host-side effects.",
         "- Processes: the worker cannot launch child processes.",
     ]
     if policy.files:
@@ -80,25 +87,30 @@ def _render_windows_policy(policy: _WindowsSandboxPolicy) -> str:
         )
     else:
         lines.append("- HTTPS broker: no endpoints granted.")
-    lines.append(
-        "- Agent tools: "
-        + _names(policy.tools)
-        + "; argument predicates apply to "
-        + _names(policy.tool_policies)
-        + ". No other Agent methods or live self fields are exposed. "
-        "Use doc(self) for granted tool signatures."
-    )
-    lines.append(
-        "- Values cross the worker boundary as explicit data snapshots and declared data "
-        "types, not arbitrary live host objects or callbacks. return_result(value) takes "
-        "the value itself."
-    )
+    if policy.host_tools:
+        lines.append(render_host_tools_block())
+    else:
+        lines.append(
+            "- Agent tools: "
+            + _names(policy.tools)
+            + "; argument predicates apply to "
+            + _names(policy.tool_policies)
+            + ". No other Agent methods or live self fields are exposed. "
+            "Use doc(self) for granted tool signatures."
+        )
+    lines.append(render_value_transfer_block())
     lines.append(
         "- Cell deadline: "
         + ("disabled." if policy.cell_timeout_s is None else f"{policy.cell_timeout_s:g}s.")
         + f" Worker startup deadline: {policy.startup_timeout_s:g}s; "
         f"IPC frame deadline: {policy.frame_timeout_s:g}s; parent-tool deadline: "
         + ("disabled." if policy.broker_timeout_s == 0 else f"{policy.broker_timeout_s:g}s.")
+    )
+    if policy.cell_timeout_s is not None:
+        lines.append(f"  Additional grace before hard-kill: {policy.timeout_grace_s:g}s.")
+    lines.append(
+        "- Time spent waiting for host tools is excluded from the cell deadline. "
+        "Each host-tool call has its own deadline."
     )
     lines.append(
         "- Memory: "

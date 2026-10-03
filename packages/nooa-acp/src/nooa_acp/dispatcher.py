@@ -7,18 +7,19 @@ from collections.abc import Coroutine
 from contextlib import suppress
 from typing import Any
 
-from nooa_cli.coding import CodingAgent, CodingSlashCommandRegistry
+from nooa_cli.coding import CodingSlashCommandRegistry
 from pydantic import BaseModel
 
-from nooa.interactive import Done, NeedInput, Waiting
+from nooa.interactive import Done, InteractiveAgent, NeedInput, Waiting
 from nooa.slash_dispatch import SlashCommandResult
 
 TurnResult = Done | NeedInput | Waiting
 
 
 class InteractiveSessionDispatcher:
-    def __init__(self, agent: CodingAgent) -> None:
+    def __init__(self, agent: InteractiveAgent, *, strategy: Any = None) -> None:
         self.agent = agent
+        self._strategy = strategy
         self._active_task: asyncio.Task[Any] | None = None
         self._cancel_requested = False
         self._cancelling = False
@@ -81,7 +82,10 @@ class InteractiveSessionDispatcher:
                 if drained := channel.drain():
                     notification.setdefault(name, []).extend(drained)
 
-            result = await self.agent.handle(notification)
+            if self._strategy is None:
+                result = await self.agent.handle(notification)
+            else:
+                result = await self.agent.handle(notification, _strategy=self._strategy)
             self._show(result)
             # Keep the prompt open while the turn waits on a job or queue.
             if isinstance(result, Waiting):

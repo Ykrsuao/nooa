@@ -17,6 +17,7 @@ from nooa.runtime.sandbox._lpac_files import (
     _FileGrant,
     _finish_file_io,
     _local_path,
+    _mark_created_file_for_deletion,
     _open_native_file,
     _open_pinned_file,
     _verify_handle_path,
@@ -172,7 +173,9 @@ class _DirectoryBroker:
     writers/replacement only during I/O, not for the broker's whole lifetime.
     Same-user host code is trusted: Windows sharing flags do not stop it from
     adding hardlinks after the check. This is not isolation from a hostile host.
-    No create/delete/rename operation or atomic/durable transaction is supplied.
+    Explicit creation uses FILE_CREATE under a pinned existing parent and never
+    replaces an existing object. No directory creation, delete, rename or durable
+    transaction is supplied.
     Directory listings are not snapshots against concurrent trusted host edits.
 
     Only explicitly granted callbacks expose these methods to an LPAC worker.
@@ -253,7 +256,7 @@ class _DirectoryBroker:
         """Read an existing regular file by a slash-separated relative path."""
         return await _finish_file_io(self._read, name, path)
 
-    def _file(self, stack, name, path, *, write=False):
+    def _file(self, stack, name, path, *, write=False, create=False):
         root = self._root(name, write=write)
         parts = _relative_parts(path)
         parent = self._descend(stack, root, parts[:-1])
@@ -261,6 +264,7 @@ class _DirectoryBroker:
             _FileGrant(parent.path / parts[-1], writable=write),
             root_handle=parent.handle,
             reject_links=True,
+            create=create,
         )
         stack.callback(os.close, fd)
         return fd
@@ -268,15 +272,18 @@ class _DirectoryBroker:
     def _read(self, name, path):
         with self._lock, contextlib.ExitStack() as stack:
             fd = self._file(stack, name, path)
-            if os.fstat(fd).st_size > self._limit:
-                raise ValueError("file exceeds max_file_bytes")
-            data = bytearray()
-            while len(data) <= self._limit:
-                chunk = os.read(fd, min(65536, self._limit + 1 - len(data)))
-                if not chunk:
-                    return bytes(data)
-                data.extend(chunk)
+            return self._read_fd(fd)
+
+    def _read_fd(self, fd):
+        if os.fstat(fd).st_size > self._limit:
             raise ValueError("file exceeds max_file_bytes")
+        data = bytearray()
+        while len(data) <= self._limit:
+            chunk = os.read(fd, min(65536, self._limit + 1 - len(data)))
+            if not chunk:
+                return bytes(data)
+            data.extend(chunk)
+        raise ValueError("file exceeds max_file_bytes")
 
     async def write(self, name: str, path: str, data: bytes) -> int:
         """Replace only an existing single-link file in a writable directory grant."""
@@ -287,14 +294,52 @@ class _DirectoryBroker:
     def _write(self, name, path, data):
         with self._lock, contextlib.ExitStack() as stack:
             fd = self._file(stack, name, path, write=True)
-            pending = memoryview(data)
-            while pending:
-                count = os.write(fd, pending)
-                if count <= 0:
-                    raise OSError("file write made no progress")
-                pending = pending[count:]
-            os.ftruncate(fd, len(data))
-            return len(data)
+            return self._write_fd(fd, data)
+
+    @staticmethod
+    def _write_fd(fd, data):
+        pending = memoryview(data)
+        while pending:
+            count = os.write(fd, pending)
+            if count <= 0:
+                raise OSError("file write made no progress")
+            pending = pending[count:]
+        os.ftruncate(fd, len(data))
+        return len(data)
+
+    async def create(self, name: str, path: str, data: bytes) -> int:
+        """Create a new regular file under an existing writable granted directory.
+
+        Existing files, links and directories are refused without truncation.
+        """
+        if type(data) is not bytes or len(data) > self._limit:
+            raise ValueError("file data must be bytes within max_file_bytes")
+        return await _finish_file_io(self._create, name, path, data)
+
+    def _create(self, name, path, data):
+        import msvcrt
+
+        with self._lock, contextlib.ExitStack() as stack:
+            fd = self._file(stack, name, path, write=True, create=True)
+            try:
+                return self._write_fd(fd, data)
+            except BaseException:
+                _mark_created_file_for_deletion(msvcrt.get_osfhandle(fd))
+                raise
+
+    async def update(self, name: str, path: str, expected: bytes, data: bytes) -> int:
+        """Replace a file only if its bounded contents still match the prior read."""
+        if any(type(value) is not bytes or len(value) > self._limit for value in (expected, data)):
+            raise ValueError("file data must be bytes within max_file_bytes")
+        return await _finish_file_io(self._update, name, path, expected, data)
+
+    def _update(self, name, path, expected, data):
+        with self._lock, contextlib.ExitStack() as stack:
+            fd = self._file(stack, name, path, write=True)
+            if self._read_fd(fd) != expected:
+                raise ValueError("file changed since it was read; read again before editing")
+            os.lseek(fd, 0, os.SEEK_SET)
+            return self._write_fd(fd, data)
 
     def close(self):
         with self._lock:

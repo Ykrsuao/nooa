@@ -9,12 +9,17 @@ Public surface:
   process backend that runs cells in a locked-down worker.
 * guard errors (:class:`CellTimeoutError`, :class:`CellMemoryError`, ...).
 
-The separate ``nooa.runtime.sandbox.windows`` module provides an explicit native
-Windows policy/session interface. Enter ``WindowsSandboxSession`` and pass its
-strategy to Agent generation methods; CodeAct's fork-based backend is separate.
+``SandboxSession`` selects the native Linux or Windows backend. Both accept
+``SandboxConfig`` for code isolation with trusted host tools; unsupported
+Linux-specific path/resource policies fail explicitly on Windows. The
+``nooa.runtime.sandbox.windows`` module also provides the
+Windows-specific policy/session interface. Enter a session and pass its strategy
+to Agent generation methods; host-side tools keep their native trust semantics.
 """
 
 from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 from nooa.runtime.sandbox.config import FileRule, SandboxConfig
 from nooa.runtime.sandbox.errors import (
@@ -27,7 +32,21 @@ from nooa.runtime.sandbox.errors import (
     WorkerDiedError,
 )
 
+if TYPE_CHECKING:
+    from nooa.runtime.sandbox.session import SandboxSession
+
+
+def __getattr__(name: str):
+    # CodeActConfig imports sandbox.config while strategies are still loading.
+    if name == "SandboxSession":
+        from nooa.runtime.sandbox.session import SandboxSession
+
+        return SandboxSession
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 __all__ = [
+    "SandboxSession",
     "SandboxConfig",
     "FileRule",
     "SandboxError",

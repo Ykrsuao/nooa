@@ -88,7 +88,7 @@ def test_context_block_lists_only_active_guards():
     block = render_sandbox_block(SandboxConfig(network=True, filesystem=False), cell_timeout=None)
     assert "Network: disabled" not in block  # network allowed -> omitted
     assert "Filesystem" not in block  # filesystem off -> omitted
-    assert "picklable" in block  # always present
+    assert "supported data snapshots" in block  # always present
 
 
 def test_context_block_includes_active_guards():
@@ -97,7 +97,7 @@ def test_context_block_includes_active_guards():
         cell_timeout=60.0,
     )
     assert "60s" in block
-    assert "512 MB" in block
+    assert "512 MiB" in block
     assert "30s of CPU" in block
     assert "/w" in block
     assert "Network: disabled" in block

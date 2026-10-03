@@ -23,7 +23,6 @@ from acp import (
 from acp.interfaces import Client
 from acp.schema import ContentToolCallContent, Cost, ToolCallLocation, UsageUpdate
 from nooa_cli.coding import (
-    CodingAgent,
     FileEdit,
     TerminalCommandFinished,
     TerminalCommandOutput,
@@ -33,7 +32,7 @@ from nooa_cli.coding import (
 from nooa.agentdoc import pformat
 from nooa.context_blocks.events import EventBase, ResultStatus, ToolCallEvent
 from nooa.events import LLMResponse, PythonOutput
-from nooa.interactive import AgentMessage
+from nooa.interactive import AgentMessage, InteractiveAgent
 
 # ACP owns stdout for JSON-RPC; diagnostics belong on stderr, which is where
 # the logging default sends them.
@@ -67,7 +66,7 @@ def _python_content(code: str, output: str | None = None) -> list[ContentToolCal
 
 
 class ACPEventBridge:
-    def __init__(self, agent: CodingAgent, client: Client, session_id: str) -> None:
+    def __init__(self, agent: InteractiveAgent, client: Client, session_id: str) -> None:
         self.agent = agent
         self.client = client
         self.session_id = session_id

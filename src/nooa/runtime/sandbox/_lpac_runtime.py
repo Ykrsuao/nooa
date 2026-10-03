@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import importlib.metadata as metadata
+import importlib.util
 import json
 import shutil
 import sys
@@ -149,18 +150,20 @@ def _dependency_closure(requirements: Iterable[str]) -> list[metadata.Distributi
 def _stage_packages(destination: Path, requirements: Iterable[str] = ()) -> None:
     """Populate a new private directory from trusted installed distributions.
 
-    Editable NOOA uses its package directory, not its repository. Other editable
-    distributions fail explicitly. .pth execution, launchers, bytecode and local
-    installation metadata are not transferred.
+    Editable NOOA and the first-party CLI use their exact package directories,
+    not their repositories. CLI source fallback copies Python only. Other editable
+    distributions fail explicitly. .pth execution, launchers and bytecode are not
+    transferred.
     """
     import nooa
 
     destination = _long_path(destination)
+    distributions = _dependency_closure(requirements)
     # Keep validation on the caller and bound both I/O concurrency and queued work.
     # Executor exit joins every copy, including when validation or a copy fails.
     with ThreadPoolExecutor(max_workers=4, thread_name_prefix="nooa-stage") as pool:
         pending = deque()
-        for source, target in _package_files(destination, requirements):
+        for source, target in _package_files(destination, distributions):
             if len(pending) >= 32:
                 pending.popleft().result()
             pending.append(pool.submit(shutil.copyfile, source, target))
@@ -169,24 +172,73 @@ def _stage_packages(destination: Path, requirements: Iterable[str] = ()) -> None
     package = destination / "nooa"
     if not package.exists():
         _copy_stdlib(Path(nooa.__file__).resolve().parent, package)
+    if (
+        any(
+            canonicalize_name(dist.metadata["Name"]) == "nooa-cli" and _is_editable(dist)
+            for dist in distributions
+        )
+        and not (destination / "nooa_cli").exists()
+    ):
+        _stage_editable_cli(destination / "nooa_cli")
 
 
-def _package_files(destination: Path, requirements: Iterable[str]) -> Iterable[tuple[Path, Path]]:
+def _is_editable(dist: metadata.Distribution) -> bool:
+    direct_url = dist.read_text("direct_url.json")
+    return bool(direct_url and json.loads(direct_url).get("dir_info", {}).get("editable"))
+
+
+def _stage_editable_cli(destination: Path) -> None:
+    """Copy only Python source from the installed first-party CLI package.
+
+    Resolving a top-level spec does not import the package or execute its editable
+    .pth hook. The host has already selected its installed package location.
+    """
+    spec = importlib.util.find_spec("nooa_cli")
+    if spec is None or spec.origin is None or spec.submodule_search_locations is None:
+        raise ValueError("editable nooa-cli requires an installed Python package source")
+    origin = Path(spec.origin).absolute()
+    source = origin.parent
+    locations = tuple(Path(path).absolute() for path in spec.submodule_search_locations)
+    if (
+        origin.name != "__init__.py"
+        or locations != (source,)
+        or source.resolve() != source
+        or not origin.is_file()
+    ):
+        raise ValueError("editable nooa-cli requires a non-reparse Python package source")
+    _check_source(source)
+    _check_source(origin)
+
+    def copy(directory: Path) -> None:
+        for item in directory.iterdir():
+            if item.name.startswith(".") or item.name.casefold() == "__pycache__":
+                continue
+            if item.is_dir():
+                _check_source(item)
+                copy(item)
+            elif item.suffix.casefold() in (".py", ".pyi"):
+                _check_source(item)
+                target = destination / item.relative_to(source)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(_long_path(item), target)
+
+    copy(source)
+
+
+def _package_files(
+    destination: Path, distributions: Iterable[metadata.Distribution]
+) -> Iterable[tuple[Path, Path]]:
     """Validate manifests serially before yielding each private copy destination."""
     core_names = {canonicalize_name(dist.metadata["Name"]) for dist in _dependency_closure(())}
-    distributions = _dependency_closure(requirements)
     destination.mkdir()
     copied = {}
     import_roots = {}
     stdlib = {name.casefold() for name in sys.stdlib_module_names}
     for dist in distributions:
         name = canonicalize_name(dist.metadata["Name"])
-        direct_url = dist.read_text("direct_url.json")
-        if (
-            name != "nooa"
-            and direct_url
-            and json.loads(direct_url).get("dir_info", {}).get("editable")
-        ):
+        editable = _is_editable(dist)
+        first_party_editable = name in ("nooa", "nooa-cli") and editable
+        if name not in ("nooa", "nooa-cli") and editable:
             raise ValueError(f"editable distribution is unsupported: {name}")
         files = dist.files
         if files is None:
@@ -198,7 +250,11 @@ def _package_files(destination: Path, requirements: Iterable[str]) -> Iterable[t
             suffix = relative.suffix.casefold()
             # Core dependencies already run without their install hooks (notably
             # setuptools' distutils-precedence.pth). New dependency hooks are unsupported.
-            if name not in core_names and suffix in (".pth", ".egg-link"):
+            if (
+                name not in core_names
+                and not first_party_editable
+                and suffix in (".pth", ".egg-link")
+            ):
                 raise ValueError(f"distribution requires an unsupported install hook: {name}")
             if (
                 relative.is_absolute()
@@ -213,7 +269,11 @@ def _package_files(destination: Path, requirements: Iterable[str]) -> Iterable[t
             for part in relative.parts:
                 _input_name(part)
             import_root = relative.parts[0].split(".")[0].casefold()
-            if import_root in stdlib or (name != "nooa" and import_root == "nooa"):
+            if (
+                import_root in stdlib
+                or (name != "nooa" and import_root == "nooa")
+                or (name != "nooa-cli" and import_root == "nooa_cli")
+            ):
                 raise ValueError(f"distribution shadows a runtime package: {name}/{relative}")
             is_package = len(relative.parts) > 1
             previous_root = import_roots.get(import_root)
@@ -238,5 +298,5 @@ def _package_files(destination: Path, requirements: Iterable[str]) -> Iterable[t
             target.parent.mkdir(parents=True, exist_ok=True)
             copied[identity] = source
             yield source, target
-        if name != "nooa" and not package_files:
+        if name != "nooa" and not first_party_editable and not package_files:
             raise ValueError(f"editable/empty distribution is unsupported: {name}")

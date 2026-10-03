@@ -5,7 +5,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import os
+import sys
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -53,6 +56,7 @@ from nooa_cli.coding import (
     CodingSlashCommandRegistry,
     load_coding_skills_dirs,
 )
+from nooa_cli.coding.sandbox_agent import SandboxCodingAgent
 from nooa_cli.sessions import (
     InvalidSessionIdError,
     SessionHandle,
@@ -60,8 +64,13 @@ from nooa_cli.sessions import (
     SessionStore,
 )
 
+from nooa import Context
+from nooa.config import CodeActConfig
 from nooa.errors import GenerationError
+from nooa.interactive import Done, InteractiveAgent, NeedInput, Waiting
 from nooa.mcp import MCPManager, MCPTool
+from nooa.paths import get_user_dir
+from nooa.runtime.sandbox import SandboxConfig, SandboxSession
 from nooa.slash_dispatch import CoercionError
 from nooa.strategies.codeact import MAX_ITERATIONS_MESSAGE, OUTPUT_TOKENS_EXHAUSTED_MESSAGE
 from nooa.unifiedllm import UnifiedLLM
@@ -71,6 +80,7 @@ from nooa_acp._runtime import (
     SessionRuntimeClosedError,
     SessionRuntimePool,
 )
+from nooa_acp._sandbox_namespace import coding_sandbox_globals
 from nooa_acp.dispatcher import InteractiveSessionDispatcher
 from nooa_acp.event_bridge import ACPEventBridge
 
@@ -85,10 +95,11 @@ class _ACPSession:
     """Live resources owned by one ACP session runtime."""
 
     handle: SessionHandle
-    agent: CodingAgent
+    agent: InteractiveAgent
     dispatcher: InteractiveSessionDispatcher
     bridge: ACPEventBridge
     commands: CodingSlashCommandRegistry
+    sandbox: SandboxSession | None = None
     startup_warnings: tuple[str, ...] = ()
     cancel_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     cancel_complete: asyncio.Event = field(default_factory=asyncio.Event)
@@ -104,23 +115,90 @@ class _ACPSession:
         if self.notification_tasks:
             await asyncio.gather(*self.notification_tasks, return_exceptions=True)
         self.notification_tasks.clear()
-        try:
+        # A failed native close must keep storage and all owner objects alive
+        # for an adapter.close() retry. Do not close the handle in a finally.
+        await self.dispatcher.cancel()
+        if self.sandbox is not None:
+            await self.sandbox.aclose()
+            self.sandbox = None
+        await self.dispatcher.close()
+        await self.bridge.close()
+        self.commands.close()
+        self.handle.close()
+
+
+@dataclass(slots=True, eq=False)
+class _PendingSession:
+    """Retain resources even if provisioning fails before runtime registration."""
+
+    handle: SessionHandle
+    llm: UnifiedLLM
+    agent: InteractiveAgent | None = None
+    value: _ACPSession | None = None
+    dispatcher: InteractiveSessionDispatcher | None = None
+    bridge: ACPEventBridge | None = None
+    commands: CodingSlashCommandRegistry | None = None
+    sandbox: SandboxSession | None = None
+    _owner: SessionRuntime[_PendingSession] = field(init=False)
+
+    def __post_init__(self) -> None:
+        self._owner = SessionRuntime(
+            self.handle.id, self, close=lambda pending: pending._close_resources()
+        )
+
+    async def close(self) -> None:
+        await self._owner.close()
+
+    async def _close_resources(self) -> None:
+        if self.value is not None:
+            await self.value.close()
+            return
+        if self.dispatcher is not None:
+            await self.dispatcher.cancel()
+        if self.sandbox is not None:
+            await self.sandbox.aclose()
+            self.sandbox = None
+        if self.dispatcher is not None:
+            await self.dispatcher.close()
+        elif self.agent is not None:
+            await self.agent.close()
+        else:
+            await self.llm.aclose()
+        if self.bridge is not None:
             await self.bridge.close()
-        finally:
-            try:
-                self.commands.close()
-            finally:
-                try:
-                    await self.dispatcher.close()
-                finally:
-                    self.handle.close()
+        if self.commands is not None:
+            self.commands.close()
+        self.handle.close()
 
 
 class CodingACPAdapter:
-    def __init__(self, llm_factory: Callable[[], UnifiedLLM]) -> None:
+    def __init__(
+        self,
+        llm_factory: Callable[[], UnifiedLLM],
+        *,
+        sandbox: str = "off",
+        sandbox_mode: str = "strict",
+        sandbox_network: str = "off",
+    ) -> None:
+        if sandbox not in ("off", "auto", "linux", "windows"):
+            raise ValueError("sandbox must be off, auto, linux or windows")
+        if sandbox_mode not in ("code", "strict"):
+            raise ValueError("sandbox_mode must be code or strict")
+        if sandbox_network not in ("off", "on"):
+            raise ValueError("sandbox_network must be off or on")
+        if sandbox_network == "on" and (sandbox == "off" or sandbox_mode != "code"):
+            raise ValueError("sandbox_network on requires an enabled sandbox in code mode")
+        if sandbox != "off":
+            native = {"linux": "linux", "win32": "windows"}.get(sys.platform)
+            if native is None or sandbox not in ("auto", native):
+                raise ValueError("ACP sandbox requires the native Linux or Windows backend")
+        self._sandbox = sandbox
+        self._sandbox_mode = sandbox_mode
+        self._sandbox_network = sandbox_network
         self._llm_factory = llm_factory
         self._client: Client | None = None
         self._sessions: SessionRuntimePool[_ACPSession] = SessionRuntimePool()
+        self._pending: list[_PendingSession] = []
 
     def on_connect(self, conn: Client) -> None:
         self._client = conn
@@ -147,7 +225,9 @@ class CodingACPAdapter:
                 # however the user configured them. _create_mcp_tools connects
                 # both transports, so say so. `acp` stays off: it is unstable in
                 # the spec and not implemented here.
-                mcp_capabilities=McpCapabilities(http=True, sse=True),
+                mcp_capabilities=McpCapabilities(
+                    http=not self._strict_sandbox, sse=not self._strict_sandbox
+                ),
                 session_capabilities=SessionCapabilities(
                     list=SessionListCapabilities(),
                     close=SessionCloseCapabilities(),
@@ -170,11 +250,12 @@ class CodingACPAdapter:
     ) -> NewSessionResponse:
         del kwargs
         root = self._validate_workspace(cwd, additional_directories)
+        self._check_mcp(mcp_servers)
         llm = self._llm_factory()
         try:
             handle = self._store(root).create(
                 model=llm.model,
-                agent="CodingAgent",
+                agent="SandboxCodingAgent" if self._strict_sandbox else "CodingAgent",
                 working_directory=str(root),
                 origin="acp",
                 check_same_thread=False,
@@ -185,8 +266,9 @@ class CodingACPAdapter:
         try:
             runtime = await self._create_runtime(handle, root, mcp_servers, llm=llm)
         except BaseException:
-            handle.close()
-            self._store(root).delete(handle.id)
+            if not any(pending.handle is handle for pending in self._pending):
+                handle.close()
+                self._store(root).delete(handle.id)
             raise
         self._defer_bootstrap_updates(runtime.value)
         return NewSessionResponse(session_id=handle.id)
@@ -201,6 +283,11 @@ class CodingACPAdapter:
     ) -> LoadSessionResponse:
         del kwargs
         root = self._validate_workspace(cwd, additional_directories)
+        self._check_mcp(mcp_servers)
+        if any(pending.handle.id == session_id for pending in self._pending):
+            raise RequestError.invalid_request(
+                {"sessionId": session_id, "reason": "Session startup cleanup is still pending"}
+            )
         try:
             handle = self._store(root).open(session_id, check_same_thread=False)
         except (InvalidSessionIdError, SessionNotFoundError):
@@ -219,7 +306,7 @@ class CodingACPAdapter:
             if runtime is not None:
                 with suppress(KeyError):
                     await self._sessions.remove(session_id, include_unavailable=True)
-            else:
+            elif not any(pending.handle is handle for pending in self._pending):
                 handle.close()
             raise
         return LoadSessionResponse()
@@ -394,65 +481,116 @@ class CodingACPAdapter:
         if self._client is None:
             await llm.aclose()
             raise RequestError.internal_error({"reason": "ACP client is not connected"})
-        agent: CodingAgent | None = None
+        agent: CodingAgent | SandboxCodingAgent | None = None
         commands: CodingSlashCommandRegistry | None = None
         value: _ACPSession | None = None
+        pending = _PendingSession(handle, llm)
+        self._pending.append(pending)
         try:
-            mcp, mcp_warnings = await self._create_mcp_tools(mcp_servers)
-            agent = CodingAgent(
-                llm=llm,
-                cwd=root,
-                storage=handle.storage,
-                # Same anchoring as the session store above: one ACP process
-                # serves many workspaces, so project-local paths follow the
-                # session's workspace rather than the process.
-                libs_dir=root / ".nooa" / "libs",
-                skills_dirs=load_coding_skills_dirs(root),
-            )
+            self._check_mcp(mcp_servers)
             registration_warnings: list[str] = []
-            for name, tool in mcp.items():
-                registry_name = f"mcp.{name}"
-                try:
-                    agent.skills.register(registry_name, tool)
-                    agent.skills.activate([registry_name])
-                except ValueError as exc:
-                    # A server name can collide with a core agent attribute
-                    # (`shell`, `repo`) or a reserved one (`runtime`). Skipping
-                    # it keeps the session usable — the same contract the
-                    # connect path already offers for an unreachable server —
-                    # instead of failing session/new with an opaque error.
-                    registration_warnings.append(f"MCP server {name!r} was not registered: {exc}")
-            dispatcher = InteractiveSessionDispatcher(agent)
+            if not self._strict_sandbox:
+                mcp, mcp_warnings = await self._create_mcp_tools(mcp_servers)
+                agent = CodingAgent(
+                    llm=llm,
+                    cwd=root,
+                    storage=handle.storage,
+                    libs_dir=root / ".nooa" / "libs",
+                    skills_dirs=load_coding_skills_dirs(root),
+                )
+                pending.agent = agent
+                for name, tool in mcp.items():
+                    registry_name = f"mcp.{name}"
+                    try:
+                        agent.skills.register(registry_name, tool)
+                        agent.skills.activate([registry_name])
+                    except ValueError as exc:
+                        registration_warnings.append(
+                            f"MCP server {name!r} was not registered: {exc}"
+                        )
+                native_strategy = None
+                if self._sandbox != "off":
+                    sandbox = self._code_sandbox()
+                    pending.sandbox = sandbox
+                    await sandbox.__aenter__()
+                    if sandbox.backend == "windows":
+                        native_strategy = sandbox.strategy(
+                            module_globals=coding_sandbox_globals(),
+                            data_types=(Done, NeedInput, Waiting),
+                        )
+                    else:
+                        native_strategy = sandbox.strategy()
+                    agent.context["sandbox_execution_mode"] = Context(
+                        "Generated Python runs in a native sandbox. Calls through self, including "
+                        "shell, skills and MCP, execute on the host with their usual access. "
+                        f"Generated Python network access is {self._sandbox_network}; this setting "
+                        "does not restrict host tools or the model connection.",
+                        prefix=True,
+                    )
+                dispatcher = InteractiveSessionDispatcher(agent, strategy=native_strategy)
+            else:
+                mcp_warnings = ()
+                agent = SandboxCodingAgent(
+                    llm=llm, cwd=root, storage=handle.storage, backend=self._sandbox
+                )
+                pending.agent = agent
+                await agent.start()
+                dispatcher = InteractiveSessionDispatcher(agent)
+            pending.dispatcher = dispatcher
             bridge = ACPEventBridge(agent, self._client, handle.id)
+            pending.bridge = bridge
             commands = CodingSlashCommandRegistry(agent)
+            pending.commands = commands
             value = _ACPSession(
                 handle,
                 agent,
                 dispatcher,
                 bridge,
                 commands,
+                sandbox=pending.sandbox,
                 startup_warnings=(*mcp_warnings, *registration_warnings),
             )
+            pending.value = value
             commands.set_on_change(
                 lambda available: bridge.publish(_available_commands_update(available)),
             )
             try:
                 runtime = await self._sessions.add(handle.id, value, available=available)
+                self._pending.remove(pending)
                 return runtime
             except ValueError:
                 raise RequestError.invalid_request(
                     {"sessionId": handle.id, "reason": "Session is already loaded"}
                 ) from None
         except BaseException:
-            if value is not None:
-                await value.close()
-            elif agent is not None:
-                if commands is not None:
-                    commands.close()
-                await agent.close()
-            else:
-                await llm.aclose()
+            await self._close_pending(pending)
             raise
+
+    async def _close_pending(self, pending: _PendingSession) -> None:
+        await pending.close()
+        if pending in self._pending:
+            self._pending.remove(pending)
+
+    def _check_mcp(self, servers: list[Any] | None) -> None:
+        if self._strict_sandbox and servers:
+            raise RequestError.invalid_params(
+                {"reason": "MCP servers are not supported in ACP strict sandbox mode"}
+            )
+
+    @property
+    def _strict_sandbox(self) -> bool:
+        return self._sandbox != "off" and self._sandbox_mode == "strict"
+
+    def _code_sandbox(self) -> SandboxSession:
+        options: dict[str, Any] = {}
+        if sys.platform == "win32":
+            options["application_requirements"] = ("nooa-cli",)
+        return SandboxSession(
+            SandboxConfig(network=self._sandbox_network == "on", broker_timeout_s=120),
+            backend=cast(Any, self._sandbox),
+            config=CodeActConfig(cell_timeout=30),
+            **options,
+        )
 
     async def _create_mcp_tools(
         self,
@@ -567,9 +705,20 @@ class CodingACPAdapter:
             )
         return root.resolve()
 
-    @staticmethod
-    def _store(root: Path) -> SessionStore:
-        return SessionStore(root / ".nooa" / "sessions")
+    def _store(self, root: Path) -> SessionStore:
+        if self._sandbox == "off":
+            return SessionStore(root / ".nooa" / "sessions")
+        canonical = root.resolve()
+        key = hashlib.sha256(os.path.normcase(str(canonical)).encode("utf-8")).hexdigest()
+        storage_kind = (
+            "acp-sandbox-sessions" if self._strict_sandbox else "acp-code-sandbox-sessions"
+        )
+        directory = get_user_dir(storage_kind, key).resolve()
+        if directory.is_relative_to(canonical):
+            raise RequestError.invalid_params(
+                {"reason": "Sandbox session storage must be outside the granted workspace"}
+            )
+        return SessionStore(directory)
 
     @staticmethod
     def _prompt_text(prompt: list[Any]) -> str:
@@ -605,11 +754,29 @@ class CodingACPAdapter:
         return name, parts[1] if len(parts) == 2 else ""
 
     async def close(self) -> None:
-        await self._sessions.close()
+        results = await asyncio.gather(
+            self._sessions.close(),
+            *(self._close_pending(pending) for pending in tuple(self._pending)),
+            return_exceptions=True,
+        )
+        failures = [result for result in results if isinstance(result, BaseException)]
+        if failures:
+            raise BaseExceptionGroup("Failed to close ACP resources", failures)
 
 
-async def serve(llm_factory: Callable[[], UnifiedLLM]) -> None:
-    adapter = CodingACPAdapter(llm_factory)
+async def serve(
+    llm_factory: Callable[[], UnifiedLLM],
+    *,
+    sandbox: str = "off",
+    sandbox_mode: str = "strict",
+    sandbox_network: str = "off",
+) -> None:
+    adapter = CodingACPAdapter(
+        llm_factory,
+        sandbox=sandbox,
+        sandbox_mode=sandbox_mode,
+        sandbox_network=sandbox_network,
+    )
     try:
         # session/close is registered by the router as unstable. initialize()
         # advertises the close capability, so without this flag the agent
