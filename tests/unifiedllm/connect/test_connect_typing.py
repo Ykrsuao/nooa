@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from typing import Any, assert_type
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
@@ -107,7 +107,15 @@ async def test_probe_removes_owned_hooks_and_closes_real_client(
     monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
     created: list[UnifiedLLM] = []
+    requests: list[httpx.Request] = []
     factory = registry.client_from_config
+    # The real SDK validates credentials before dispatching to MockTransport.
+    # Supply an inert key so this lifecycle test also works on clean CI hosts.
+    api_key = "connect-test-key"
+    network_sync = Mock(side_effect=AssertionError("Real HTTP is not approved"))
+    network_async = AsyncMock(side_effect=AssertionError("Real HTTP is not approved"))
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", network_sync)
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", network_async)
 
     def create(*args: Any, **kwargs: Any) -> UnifiedLLM:
         client = factory(*args, **kwargs)
@@ -115,6 +123,10 @@ async def test_probe_removes_owned_hooks_and_closes_real_client(
         return client
 
     def handle(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert str(request.url) == "https://api.test/v1/chat/completions"
+        assert request.headers["authorization"] == f"Bearer {api_key}"
+        requests.append(request)
         if mode == "cancel":
             raise asyncio.CancelledError
         if mode == "error":
@@ -124,7 +136,7 @@ async def test_probe_removes_owned_hooks_and_closes_real_client(
     mock_http(monkeypatch, handle)
     monkeypatch.setattr(registry, "client_from_config", create)
     proposal = _plan()
-    call = connect._run_probe("test", proposal.entry, proposal.probes[0], None)
+    call = connect._run_probe("test", proposal.entry, proposal.probes[0], api_key)
     if mode == "cancel":
         with pytest.raises(asyncio.CancelledError):
             await call
@@ -136,6 +148,9 @@ async def test_probe_removes_owned_hooks_and_closes_real_client(
         response, observed, _ = await call
         assert response.content == "323"
         assert observed is True
+    assert len(requests) == 1
+    network_sync.assert_not_called()
+    network_async.assert_not_called()
     assert len(created) == 1
     transport = created[0]._http
     assert transport is not None

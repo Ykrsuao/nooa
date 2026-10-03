@@ -5,10 +5,12 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import os
 import shlex
 import signal
 import socket
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -166,8 +168,46 @@ def _gone(pid: int) -> bool:
         # A zombie cannot execute or retain output handles and is retired.
         status = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
         return status.split(") ", 1)[1].startswith("Z")
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
+        # procfs reports ESRCH if the process is reaped after open() but before
+        # read(); both cases mean the process has already retired.
         return True
+
+
+def test_gone_handles_process_reaped_after_stat_is_opened(monkeypatch):
+    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    status_path = Path(f"/proc/{process.pid}/stat")
+    original_open = Path.open
+
+    def open_then_reap(path, *args, **kwargs):
+        stream = original_open(path, *args, **kwargs)
+        if path == status_path:
+            process.kill()
+            process.wait(timeout=5)
+        return stream
+
+    try:
+        monkeypatch.setattr(Path, "open", open_then_reap)
+        assert _gone(process.pid)
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
+
+
+def test_gone_does_not_report_live_process_as_retired():
+    assert not _gone(os.getpid())
+
+
+@pytest.mark.parametrize("error_number", [errno.EACCES, errno.EIO])
+def test_gone_propagates_unrelated_stat_errors(monkeypatch, error_number):
+    def fail_read(path, *args, **kwargs):
+        raise OSError(error_number, os.strerror(error_number))
+
+    monkeypatch.setattr(Path, "read_text", fail_read)
+    with pytest.raises(OSError) as caught:
+        _gone(os.getpid())
+    assert caught.value.errno == error_number
 
 
 async def test_timeout_kills_descendants_before_draining_output():

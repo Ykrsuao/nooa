@@ -303,6 +303,8 @@ def _bare_executor(conn: _FakeConn) -> SandboxedExecutor:
     ex._max_error = DEFAULT_TRUNCATION_CONFIG.capture.max_error
     ex._codec = wire.Codec()
     ex._agent = _Target()
+    ex._broker_tasks = set()
+    ex._cell_stop = threading.Event()
     return ex
 
 
@@ -383,3 +385,4 @@ def test_decoded_call_payload_reaches_the_agent():
         thread.join(timeout=5)
         loop.close()
     assert conn.sent[0]["ok"] is True and conn.sent[0]["result"] == 42
+    assert not ex._broker_tasks
