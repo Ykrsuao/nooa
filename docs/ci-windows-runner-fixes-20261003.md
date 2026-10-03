@@ -69,3 +69,26 @@ All local tests use uv and Python 3.12. Evidence files remain in ignored `logs/`
 
 Local passes are not a replacement for the complete hosted Windows matrix.
 The GitHub workflow for the follow-up commit is the final runner validation.
+
+## Python 3.13 startup diagnostic
+
+The first early run at `622186b8` passed the Windows 3.12 command/Viewer checks.
+Windows 3.13 passed 20 cases but failed the mixed-output test because two
+interpreter startup diagnostics preceded the expected stderr lines; both
+Unicode streams and Viewer startup were otherwise correct.
+
+[CPython 3.13.15 getpath.py](https://github.com/python/cpython/blob/v3.13.15/Modules/getpath.py#L413)
+warns when executable realpath resolution fails for an existing file.
+[Its Windows implementation](https://github.com/python/cpython/blob/v3.13.15/Modules/getpath.c#L509)
+uses `CreateFileW` and `GetFinalPathNameByHandleW`; CPython 3.12 lacked that
+Windows realpath branch. A real LPAC API probe opened the copied interpreter
+successfully but received access denied from the final-path query, while the
+host resolved the same file successfully. Evidence is in
+`logs/python313-getpath-win32-probe-20261003.json`.
+
+Production stderr and permissions remain unchanged. The mixed-output test
+allows only Python 3.13 to prepend up to two exact startup diagnostic lines
+naming this session's copied interpreter, one for each Python process. All
+remaining Unicode output, ordering and contents must still match exactly;
+another path, unknown warning, excess count or different position fails.
+Python 3.12 retains the original exact stderr expectation.

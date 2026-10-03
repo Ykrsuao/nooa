@@ -85,10 +85,20 @@ async def test_builtin_and_python_output_share_utf8_and_console_is_hidden(sessio
         "shell 中文 🚀",
         "python 中文 🚀",
     ]
-    assert [line.strip() for line in result["stderr"].splitlines()] == [
+    expected_stderr = [
         "python error 中文 🚀",
         "shell error 中文 🚀",
     ]
+    allowed_stderr = [expected_stderr]
+    if sys.version_info[:2] == (3, 13):
+        # CPython 3.13 added a Windows getpath realpath query. LPAC can deny
+        # GetFinalPathNameByHandleW even when reading/executing the file works.
+        # Each of these two Python processes may emit this exact startup line.
+        # Preserve product stderr and reject every other path/message/order.
+        assert session._runtime is not None
+        warning = f"Failed to find real location of {session._runtime.runtime / 'python.exe'}"
+        allowed_stderr.extend([[warning, *expected_stderr], [warning, warning, *expected_stderr]])
+    assert [line.strip() for line in result["stderr"].splitlines()] in allowed_stderr
     code = """
 import ctypes as c, json
 kernel = c.WinDLL('kernel32', use_last_error=True)
