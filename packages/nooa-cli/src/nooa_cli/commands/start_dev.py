@@ -78,6 +78,7 @@ def command(port: int, host: str, db_path_opt: str | None):
     import os
     from pathlib import Path
 
+    from nooa._console import text_for_stream
     from nooa.paths import get_user_dir
 
     # Resolve the DB path with --db winning, then $NOOA_TRACE_DB, then the
@@ -122,7 +123,7 @@ def command(port: int, host: str, db_path_opt: str | None):
     click.echo()
     click.secho("  NVIDIA OO Agents Viewer", fg="cyan", bold=True)
     click.echo(f"  URL:  http://localhost:{port}")
-    click.echo(f"  DB:   {db_path}")
+    click.echo(text_for_stream(f"  DB:   {db_path}", click.get_text_stream("stdout")))
 
     # When a token is configured the viewer is reachable from other machines.
     # Print the one-time bootstrap link: opening it trades the token for a

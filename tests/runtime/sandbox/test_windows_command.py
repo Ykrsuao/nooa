@@ -32,16 +32,103 @@ async def test_cmd_quotes_staged_python_and_workspace_writes(session):
     result = await session.run(
         'echo command> "file with spaces.txt" & type "file with spaces.txt"', cwd
     )
-    assert result["returncode"] == 0 and result["timed_out"] is False
+    assert result["returncode"] == 0 and result["timed_out"] is False, result
     assert result["stdout"].strip() == "command"
     assert (cwd / "file with spaces.txt").read_text().strip() == "command"
     result = await session.run("python -I -X utf8 -S -c \"print('quoted text 中文')\"", cwd)
     assert result["returncode"] == 0, result
     assert result["stdout"].strip() == "quoted text 中文"
-    result = await session.run("echo 中文", cwd)
-    assert result["returncode"] == 0 and result["stdout"].strip() == "中文"
+    result = await session.run("echo 中文 🚀", cwd)
+    assert result["returncode"] == 0 and result["stdout"].strip() == "中文 🚀"
+    assert session._runtime is not None
+    python = session._runtime.runtime / "python.exe"
+    result = await session.run(f'"{python}" -I -X utf8 -S -c "print(\'quoted 中文 🚀\')"', cwd)
+    assert result["returncode"] == 0 and result["stdout"].strip() == "quoted 中文 🚀", result
     result = await session.run("exit /b 7", cwd)
     assert result["returncode"] == 7
+
+
+async def test_builtin_and_python_output_share_utf8_and_console_is_hidden(session, monkeypatch):
+    import ctypes
+
+    from nooa.runtime.sandbox import _win_appcontainer as native
+
+    create = native._CreateProcess
+    launches = []
+    expect_console = True
+
+    def record_creation(*args):
+        flags = args[5]
+        startup = ctypes.cast(args[8], ctypes.POINTER(native._StartupInfoEx)).contents
+        launches.append(flags)
+        assert bool(flags & 0x10) == expect_console  # CREATE_NEW_CONSOLE
+        assert bool(flags & 0x08000000) != expect_console  # CREATE_NO_WINDOW
+        assert flags & 0x80000 and flags & 0x400 and flags & 0x4
+        assert startup.info.dwFlags & 0x100  # STARTF_USESTDHANDLES
+        assert bool(startup.info.dwFlags & 0x1) == expect_console
+        assert startup.info.wShowWindow == 0
+        return create(*args)
+
+    monkeypatch.setattr(native, "_CreateProcess", record_creation)
+    result = await session.run(
+        "echo shell 中文 🚀 & "
+        "python -I -X utf8 -S -c \"import sys; print('python 中文 🚀'); "
+        "print('python error 中文 🚀', file=sys.stderr)\" & "
+        "echo shell error 中文 🚀 1>&2",
+        session.workspace,
+    )
+    assert result["returncode"] == 0, result
+    assert [line.strip() for line in result["stdout"].splitlines()] == [
+        "shell 中文 🚀",
+        "python 中文 🚀",
+    ]
+    assert [line.strip() for line in result["stderr"].splitlines()] == [
+        "python error 中文 🚀",
+        "shell error 中文 🚀",
+    ]
+    code = """
+import ctypes as c, json
+kernel = c.WinDLL('kernel32', use_last_error=True)
+user = c.WinDLL('user32', use_last_error=True)
+kernel.GetConsoleWindow.restype = c.c_void_p
+user.IsWindowVisible.argtypes = [c.c_void_p]
+window = kernel.GetConsoleWindow()
+print(json.dumps([bool(window), bool(user.IsWindowVisible(window)), kernel.GetConsoleOutputCP()]))
+"""
+    (session.workspace / "console.py").write_text(code, encoding="utf-8")
+    result = await session.run("python -I -S console.py", session.workspace)
+    assert result["returncode"] == 0, result
+    assert json.loads(result["stdout"]) == [True, False, 65001]
+    assert len(launches) == 2
+    expect_console = False
+    assert session._runtime is not None
+    worker = await asyncio.to_thread(session._runtime.run, "print('default worker')")
+    assert worker.returncode == 0 and worker.stdout.strip() == b"default worker"
+    assert len(launches) == 3
+
+
+async def test_shell_lookup_ignores_snapshot_executables(session):
+    # Invalid executables make accidental current-directory lookup fail loudly.
+    (session.workspace / "cmd.exe").write_bytes(b"not a PE executable")
+    (session.workspace / "cmd.cmd").write_text("@echo hijacked\n", encoding="ascii")
+    (session.workspace / "chcp.exe").write_bytes(b"not a PE executable")
+    (session.workspace / "chcp.com").write_bytes(b"not a COM executable")
+    (session.workspace / "chcp.cmd").write_text("@echo hijacked\n", encoding="ascii")
+    result = await session.run("echo trusted shell 中文 🚀", session.workspace)
+    assert result["returncode"] == 0, result
+    assert result["stdout"].strip() == "trusted shell 中文 🚀"
+
+
+async def test_two_process_limit_supports_builtins_without_expanding_job_limit():
+    with pytest.raises(ValueError, match="two command shells"):
+        WindowsCommandSession(active_process_limit=1)
+    async with WindowsCommandSession(active_process_limit=2) as session:
+        result = await session.run("echo bounded 中文 🚀", session.workspace)
+        assert result["returncode"] == 0, result
+        assert result["stdout"].strip() == "bounded 中文 🚀"
+        result = await session.run("python -I -S -c \"print('unexpected')\"", session.workspace)
+        assert result["returncode"] != 0, result
+        assert "unexpected" not in result["stdout"]
 
 
 async def test_child_inherits_lpac_and_cannot_read_host_connect_or_break_away(
@@ -106,7 +193,9 @@ async def test_exited_shell_does_not_leave_background_descendants_or_block_outpu
 
 async def test_timeout_and_output_limit_leave_session_reusable(session):
     result = await session.run(
-        "python -I -S -c \"import time; print('started', flush=True); time.sleep(60)\"",
+        # Timeout includes interpreter startup. Emit the marker from the shell
+        # so output retention does not depend on Python starting within 0.5 s.
+        'echo started & python -I -S -c "import time; time.sleep(60)"',
         session.workspace,
         timeout_s=0.5,
     )

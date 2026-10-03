@@ -44,6 +44,7 @@ from opentelemetry.sdk.trace.export import (
 )
 from opentelemetry.sdk.trace.id_generator import RandomIdGenerator
 
+from nooa._console import text_for_stream
 from nooa._version import __version__
 from nooa.tracing import exporters as exporters_mod
 
@@ -551,7 +552,7 @@ def _print_trace_target(exporters: list[SpanExporter], experiment: str | None) -
             descriptions.append(_describe_exporter(exp))
 
     suffix = f" (experiment={experiment})" if experiment else ""
-    print(f"OTel tracing enabled: {', '.join(descriptions)}{suffix}")
+    print(text_for_stream(f"OTel tracing enabled: {', '.join(descriptions)}{suffix}", sys.stdout))
 
     if has_file_exporter and len(exporters) == 1:
         print("  Tip: Run `nooa start-dev` to launch the trace viewer for interactive exploration.")

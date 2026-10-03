@@ -391,11 +391,14 @@ class SuspendedProcess:
         job: ProcessJob,
         allow_child_processes: bool = False,
         command_line: str | None = None,
+        hidden_console: bool = False,
     ):
         import subprocess
 
         if type(allow_child_processes) is not bool:
             raise TypeError("allow_child_processes must be a bool")
+        if type(hidden_console) is not bool:
+            raise TypeError("hidden_console must be a bool")
         if command_line is not None and (
             not isinstance(command_line, str) or "\0" in command_line or len(command_line) >= 32767
         ):
@@ -438,6 +441,11 @@ class SuspendedProcess:
             startup = _StartupInfoEx()
             startup.info.cb = ctypes.sizeof(startup)
             startup.info.dwFlags = 0x100  # STARTF_USESTDHANDLES
+            if hidden_console:
+                # A private console lets command sessions select UTF-8 without
+                # changing a host console or displaying a window.
+                startup.info.dwFlags |= 0x1  # STARTF_USESHOWWINDOW
+                startup.info.wShowWindow = 0  # SW_HIDE
             startup.info.hStdInput, startup.info.hStdOutput, startup.info.hStdError = handles
             startup.attributes = ctypes.cast(buffer, _ptr)
             command = ctypes.create_unicode_buffer(
@@ -453,7 +461,7 @@ class SuspendedProcess:
                     None,
                     None,
                     True,
-                    0x80000 | 0x08000000 | 0x00000400 | 0x00000004,
+                    0x80000 | (0x10 if hidden_console else 0x08000000) | 0x00000400 | 0x00000004,
                     environment,
                     str(cwd),
                     ctypes.byref(startup),

@@ -47,8 +47,8 @@ def _decode_output(data: bytes) -> str:
     try:
         return data.decode("utf-8")
     except UnicodeDecodeError:
-        # cmd builtins and programs that ignore PYTHONUTF8 use the native OEM
-        # code page. Prefer UTF-8 for tools configured above, then that fallback.
+        # The shell and configured tools use UTF-8. Programs that explicitly
+        # retain the machine OEM code page still get a best-effort fallback.
         return data.decode("oem", "replace")
 
 
@@ -108,6 +108,9 @@ class WindowsCommandSession:
     Callers copy validated input into a fresh child of ``workspace`` and inspect
     changes after run() returns. This class never grants access to live host
     project directories. Each command gets a new LPAC process tree and Job.
+    Two process slots are required for the UTF-8 console setup shell and the
+    command shell; external programs require additional slots.
+    The wall-clock command timeout includes shell and program startup.
     """
 
     def __init__(
@@ -125,6 +128,8 @@ class WindowsCommandSession:
         ):
             if type(value) is not int or value <= 0:
                 raise ValueError(f"{name} must be a positive integer")
+        if active_process_limit < 2:
+            raise ValueError("active_process_limit must allow at least two command shells")
         self._limits = {
             "memory_limit_bytes": memory_limit_bytes,
             "cpu_time_limit_s": cpu_time_limit_s,
@@ -236,7 +241,15 @@ class WindowsCommandSession:
         )
         argv = [str(system32 / "cmd.exe"), "/d", "/s", "/c"]
         # cmd parses its /c tail using different quoting from CommandLineToArgvW.
-        command_line = subprocess.list2cmdline(argv) + ' "' + command + '"'
+        # It also caches the output code page at startup. Set UTF-8 on a private
+        # hidden console, then start a fresh shell so builtins and external tools
+        # share that encoding, including characters absent from the machine OEM.
+        shell = subprocess.list2cmdline(argv)
+        # Quote the child executable explicitly even when SystemRoot has no
+        # spaces. Resolve that shell directly, never through the writable cwd.
+        inner_shell = '"' + argv[0] + '" /d /s /c'
+        codepage = '"' + str(system32 / "chcp.com") + '" 65001 >nul || exit /b 1'
+        command_line = shell + ' "' + codepage + " & " + inner_shell + ' "' + command + '""'
         if len(command_line) >= 32767:
             raise ValueError("command exceeds the Windows command line limit")
         execution = _CommandExecution()
@@ -271,6 +284,7 @@ class WindowsCommandSession:
                 job=execution.job,
                 allow_child_processes=True,
                 command_line=command_line,
+                hidden_console=True,
             )
             for stream in execution.child_streams:
                 stream.close()
