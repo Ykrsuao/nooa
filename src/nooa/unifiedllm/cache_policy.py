@@ -57,21 +57,65 @@ def _mark_responses_content(content: Any) -> tuple[Any, bool]:
 
 
 def _mark_responses_cache_breakpoint(messages: list[dict[str, Any]], boundary: int) -> bool:
-    """Mark the latest eligible Responses input block before ``boundary``."""
+    """Reconstruct the latest 80 eligible message endpoints before ``boundary``.
+
+    Explicit lookup considers the latest 80 breakpoints (writes use the latest
+    four). Retain recent checkpoints as history grows, not just the newest one.
+    Only marked containers are copied; content strings and all other items are
+    shared. Stop after 80 endpoints, skipping ineligible assistant/native items.
+    """
+    count = 0
     for index in range(boundary - 1, -1, -1):
         item = messages[index]
         if item.get("type") == "function_call_output":
             output, marked = _mark_responses_content(item.get("output"))
             if marked:
                 messages[index] = {**item, "output": output}
-                return True
+                count += 1
         # Assistant output uses output_text, which is not an eligible input block.
-        if item.get("role") in {"system", "developer", "user"}:
+        elif item.get("role") in {"system", "developer", "user"}:
             content, marked = _mark_responses_content(item.get("content"))
             if marked:
                 messages[index] = {**item, "content": content}
-                return True
-    return False
+                count += 1
+        if count == 80:
+            break
+    return count > 0
+
+
+SESSION_AFFINITY_HEADER = "x-session-affinity"
+
+
+def add_session_affinity_header(api_params: dict[str, Any]) -> None:
+    """Mirror ``prompt_cache_key`` into the ``x-session-affinity`` request header.
+
+    A prompt cache only helps if a conversation's requests reach the worker
+    that holds its prefix. Baseten-served Hub routes (Kimi, GLM, Nemotron)
+    pick a worker per request, and every switch to a cold prefill worker is
+    a full cache miss. Baseten reads this header as a routing hint and
+    echoes it back as ``x-baseten-session-id``; on Kimi's disaggregated
+    deployment it kept a conversation on one prefill worker for every
+    follow-up where the same conversation without it rotated workers and
+    missed. Routes that don't know the header ignore it (Azure OpenAI,
+    DeepSeek, non-disaggregated Nemotron: no change in behaviour).
+
+    ``prompt_cache_key`` already identifies the conversation for the
+    provider's cache, so it is the right affinity value too. A caller's
+    explicit ``extra_headers`` entry for this header wins.
+    """
+    key = api_params.get("prompt_cache_key")
+    if not isinstance(key, str) or not key:
+        return
+    headers = api_params.get("extra_headers")
+    if headers is not None and not isinstance(headers, Mapping):
+        raise ValueError("extra_headers must be a mapping")
+    merged = dict(headers or {})
+    # Header names are case-insensitive; a caller's X-Session-Affinity wins too.
+    if not any(
+        isinstance(name, str) and name.lower() == SESSION_AFFINITY_HEADER for name in merged
+    ):
+        merged[SESSION_AFFINITY_HEADER] = key
+    api_params["extra_headers"] = merged
 
 
 def enable_openai_explicit_cache(api_params: dict[str, Any]) -> None:

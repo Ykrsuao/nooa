@@ -164,7 +164,7 @@ def _gone(pid: int) -> bool:
     try:
         # The WSL init may not reap killed orphan grandchildren immediately.
         # A zombie cannot execute or retain output handles and is retired.
-        status = Path(f"/proc/{pid}/stat").read_text()
+        status = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
         return status.split(") ", 1)[1].startswith("Z")
     except FileNotFoundError:
         return True

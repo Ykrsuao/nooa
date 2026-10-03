@@ -9,7 +9,7 @@ import math
 import re
 import warnings
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -27,6 +27,7 @@ from nooa.llm_types import (
     ToolCall,
 )
 from nooa.unifiedllm.cache_policy import (
+    add_session_affinity_header,
     apply_cache_policy,
     enable_openai_explicit_cache,
     reject_boundary_dict,
@@ -35,6 +36,7 @@ from nooa.unifiedllm.cache_policy import (
 )
 
 from . import replay_state, response_parts
+from .admission import _current_admission_controller
 from .errors import EmptyContentError
 from .http_config import HttpConfig
 from .limits import REPLY_CAP_KEYS, ContextLimits
@@ -86,6 +88,19 @@ def _record_llm_metric(event: str, detail: Any = None) -> None:
             cb(event, detail)
         except Exception as e:  # noqa: BLE001
             logger.debug("Metric callback failed for event %r: %s", event, e)
+
+
+def _record_admission_observation(detail: dict[str, Any]) -> None:
+    """Record one admission outcome on the generation span and harness metrics."""
+    _record_llm_metric("llm_queue", detail)
+    try:
+        from opentelemetry import trace as otel_trace
+
+        span = otel_trace.get_current_span()
+        if span and span.is_recording():
+            span.add_event("llm.queue", attributes=detail)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("Could not record LLM admission event: %s", e)
 
 
 @contextmanager
@@ -1186,12 +1201,13 @@ def _update_token_calibration(
         return
     # Responses lifts the leading system prompt out of input. It is still
     # billed input, so include it in the estimate without copying history.
+    message_list = list(messages)
     if instructions:
-        messages = [{"role": "system", "content": instructions}, *messages]
+        message_list = [{"role": "system", "content": instructions}, *message_list]
     # Calibration is best-effort: it must NEVER raise out of the (already paid)
     # response path. The whole estimate — primary AND fallback — is guarded.
     try:
-        counted = _token_counter_messages(messages)
+        counted = _token_counter_messages(message_list)
         try:
             estimated = litellm.token_counter(model=model, messages=counted)
             if tools:
@@ -1550,7 +1566,49 @@ async def _collect_async(raw: Any) -> "litellm.ModelResponse":
     return raw
 
 
-async def _litellm_acompletion(api_params: dict[str, Any]) -> Any:
+async def _run_async_provider_call[T](
+    call: Callable[[], Awaitable[T]],
+    *,
+    unadmitted_call: Callable[[], Awaitable[T]] | None = None,
+) -> T:
+    """Run one provider attempt, holding admission through its actual exit.
+
+    Acquisition happens before the provider task is created, so cancelling a
+    queued caller cannot dispatch abandoned work.  Once dispatched, the
+    provider task owns the permit and releases it in ``finally``.  Shielding
+    keeps that accounting correct when the caller is cancelled while remote
+    work or a stream is still active.
+    """
+    admission_controller = _current_admission_controller()
+    if admission_controller is None:
+        return await (unadmitted_call or call)()
+
+    permit = await admission_controller.acquire(_record_admission_observation)
+    if permit is None:
+        return await (unadmitted_call or call)()
+
+    async def run_and_release() -> T:
+        try:
+            return await call()
+        finally:
+            permit.release()
+
+    try:
+        task = asyncio.create_task(run_and_release())
+    except BaseException:
+        permit.release()
+        raise
+
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        task.add_done_callback(_consume_async_provider_result)
+        raise
+
+
+async def _litellm_acompletion(
+    api_params: dict[str, Any],
+) -> Any:
     """Await LiteLLM without cancelling its nested provider coroutine.
 
     LiteLLM runs sync ``completion()`` in an executor for async chat calls.
@@ -1564,15 +1622,16 @@ async def _litellm_acompletion(api_params: dict[str, Any]) -> Any:
     Shielding lets LiteLLM finish consuming that provider coroutine while the
     caller still receives ``CancelledError`` immediately.
     """
+
     task = asyncio.create_task(litellm.acompletion(**api_params))
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:
-        task.add_done_callback(_consume_litellm_acompletion_result)
+        task.add_done_callback(_consume_async_provider_result)
         raise
 
 
-def _consume_litellm_acompletion_result(task: asyncio.Task[Any]) -> None:
+def _consume_async_provider_result(task: asyncio.Task[Any]) -> None:
     try:
         task.result()
     except BaseException:
@@ -1971,6 +2030,8 @@ class CompletionClient(UnifiedLLM):
             # can create conflicting tool-choice settings in compatible servers.
             api_params.pop("tool_choice")
 
+        add_session_affinity_header(api_params)
+
         retry_on_empty = self.retry_config.retry_on_empty_content if self.retry_config else False
 
         http_client = self._completion_http_client(call_config, is_async=False)
@@ -2069,6 +2130,8 @@ class CompletionClient(UnifiedLLM):
             # can create conflicting tool-choice settings in compatible servers.
             api_params.pop("tool_choice")
 
+        add_session_affinity_header(api_params)
+
         retry_on_empty = self.retry_config.retry_on_empty_content if self.retry_config else False
 
         http_client = self._completion_http_client(call_config, is_async=True)
@@ -2076,7 +2139,16 @@ class CompletionClient(UnifiedLLM):
             api_params.setdefault("client", http_client)
 
         async def _make_call():
-            raw_response = await _collect_async(await _litellm_acompletion(api_params))
+            async def admitted_call():
+                return await _collect_async(await litellm.acompletion(**api_params))
+
+            async def unadmitted_call():
+                return await _collect_async(await _litellm_acompletion(api_params))
+
+            raw_response = await _run_async_provider_call(
+                admitted_call,
+                unadmitted_call=unadmitted_call,
+            )
             reasoning, _ = _extract_reasoning_and_usage(raw_response)
             text_content = raw_response.choices[0].message.content or ""  # type: ignore[union-attr]
 
@@ -2336,6 +2408,7 @@ class ResponsesClient(UnifiedLLM):
         replay_state.add_encrypted_reasoning_include(
             api_params, state_scope, native_encrypted_reasoning=native_encrypted_reasoning
         )
+        add_session_affinity_header(api_params)
 
         http_client = self._http
         assert http_client is not None
@@ -2418,6 +2491,7 @@ class ResponsesClient(UnifiedLLM):
         replay_state.add_encrypted_reasoning_include(
             api_params, state_scope, native_encrypted_reasoning=native_encrypted_reasoning
         )
+        add_session_affinity_header(api_params)
 
         http_client = self._http
         assert http_client is not None
@@ -2425,7 +2499,12 @@ class ResponsesClient(UnifiedLLM):
             api_params.setdefault("client", http_client.async_client)
 
         async def _make_call():
-            return cast("litellm.ResponsesAPIResponse", await litellm.aresponses(**api_params))
+            async def call_provider():
+                return cast("litellm.ResponsesAPIResponse", await litellm.aresponses(**api_params))
+
+            return await _run_async_provider_call(
+                call_provider,
+            )
 
         # Track LLM call for debugging (visible via SIGUSR2 if nooa debug handler installed)
         with _track_llm_call(model=effective_model, endpoint=self.config.get("api_base")):
